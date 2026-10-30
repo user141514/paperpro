@@ -397,3 +397,23 @@ def test_confirmed_field_can_be_cleared_or_removed_without_stale_confirmation_bl
     assert "name" not in saved["state"]["confirmed_fields"]
     assert not any(path.startswith("experience.") for path in saved["state"]["confirmed_fields"])
     assert not saved["state"]["review_confirmed"]
+
+
+def test_owned_todo_export_keeps_both_conflicting_evidence_locations(client):
+    task = ready(client)
+    root = f"/api/diagnosis/tasks/{task['id']}"
+    state = task["state"]
+    state["resume"]["skills"] += ["熟悉 Python", "Python：不会"]
+    task = client.patch(root, json={"expected_revision": task["revision"], "state": state}).json()
+    state = task["state"]
+    state.update(review_confirmed=True, confirmed_fields=[item["path"] for item in task["quality"]["critical_fields"]])
+    task = client.patch(root, json={"expected_revision": task["revision"], "state": state}).json()
+    task = client.post(root + "/run", json={"expected_revision": task["revision"], "operation_id": "contradiction-run"}).json()
+    suggestion = next(item for item in task["current_run"]["report"]["suggestions"] if item.get("related_location"))
+    task = client.patch(root + "/suggestions/" + suggestion["id"], json={"expected_revision": task["revision"], "action": "adopt", "text": "已核对能力与实际使用范围，并据实修改两处表述"}).json()
+    exported = client.get(root + "/export?kind=todo&format=txt")
+    assert exported.status_code == 200
+    text = exported.content.decode("utf-8-sig")
+    assert "原文：" + suggestion["original"] in text
+    assert "对照位置：" + suggestion["related_location"] in text
+    assert "对照原文：" + suggestion["related_original"] in text

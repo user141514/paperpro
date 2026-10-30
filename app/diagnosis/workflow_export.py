@@ -84,7 +84,9 @@ def export_text(run, kind):
                 continue
             count += 1
             lines.extend([f"{count}. {item.get('title', '优化建议')}（{'已完成' if modification['status'] == 'completed' else '已采纳，待完成'}）",
-                          f"位置：{item.get('location', '')}", f"问题：{item.get('problem', '')}",
+                          f"位置：{item.get('location', '')}", f"原文：{item.get('original', '')}",
+                          *([f"对照位置：{item['related_location']}", f"对照原文：{item.get('related_original', '')}"] if item.get("related_location") else []),
+                          f"问题：{item.get('problem', '')}",
                           f"行动：{item.get('action', '')}", f"局部示例（需核实）：{item.get('example', '')}",
                           f"我的实际修改：{modification['text']}", f"采纳时间：{modification.get('adopted_at')}",
                           f"完成时间：{modification.get('completed_at') or '尚未完成'}", ""])
