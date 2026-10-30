@@ -1,5 +1,7 @@
 # PaperPro · Resume Studio — Minimum Product Contract
 
+> This is the classic editor contract. The candidate workflow added later is governed by the user-supplied 2026-10-30 V3 design and V2 flow, tracked in [V3 checklist](docs/V3_CHECKLIST_ACCEPTANCE_20261030.md). It adds explicitly consented local task persistence, reviewed target requirements, separate adoption/completion, version history and frozen report/list export. The classic editor's stateless/no-database boundary below does not prohibit that authorized candidate workflow.
+
 ## User goal
 Create a local web agent at E:\company_work\paperpro. Upload a PDF, Word document (.docx/.doc), or scanned PNG/JPEG; extract evidence; review and improve the writing; generate a consistent professional resume in Word and PDF.
 

@@ -1,5 +1,7 @@
 # R7–R10: Candidate Resume Diagnosis (2026-10-19)
 
+> Historical R7–R10 checkpoint. The user-supplied V3 design and V2 flow on 2026-10-30 now govern the candidate workflow: role is required, advice is evidence-limited rather than padded to eight, and SQLite owns resumable drafts, runs, adoption/completion and exports. Current contract and acceptance: [V3 checklist](V3_CHECKLIST_ACCEPTANCE_20261030.md). The older stateless/branch statements below describe the 10/19 implementation only. Current task branch is `feat/v3-checklist-20261030`; the instruction not to push until explicitly requested still applies.
+
 ## Problem and objective
 Extend existing PaperPro from resume cleanup into a candidate-facing five-dimension diagnosis. Input is a reviewed, editable resume plus a role and/or company. Output is an evidence-linked diagnosis, suggestions (>=8, each location/problem/action/example), interview follow-up questions, and a selected-only todo list downloadable as PDF/TXT.
 
