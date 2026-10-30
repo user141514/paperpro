@@ -85,7 +85,23 @@ All workflow routes are under `/api/diagnosis/tasks`; browser requests use same-
 - Run appropriate backend/frontend regressions; visually inspect exported synthetic PDFs. No claimed real-person parser accuracy or live-model quality without evidence.
 - Preserve task files only, commit reviewable increments, stop all task-owned QA processes and record final branch/HEAD and remaining limitations.
 
-## Completion checkpoint
+## Follow-up: field-level minimal recomputation
+
+User explicitly requested completion of the remaining refinement, plus simulated tests. Base is `ac694e5`; reuse the same compatible primary checkout and branch. SQLite remains the sole acceptance authority. Do not add a separate cache, job manager, database schema or frontend dependency table.
+
+**Outcome / Why:** compare the reviewed fields actually consumed by each runner → rerun only affected, failed or newly enabled modules → retain independent results and genuine completed modifications → users can revise one fact without repeatedly calculating unrelated diagnostics or losing work.
+
+**Common primitive:** one pure dependency projection derives per-module fingerprints from reviewed inputs, document identity, rule content and a dependency-contract version. Persist them on immutable run snapshots; never recompute an old fingerprint using current rules. Legacy snapshots without proof require one fresh computation. The engine accepts reusable successful sections only when the workflow proves input equivalence and revalidates their evidence. Every report is rebuilt from current frozen input, with explicit computed/reused provenance; reuse does not invent a new computation date.
+
+**Interaction invariant:** only a matching fingerprint, valid successful result and accepted operation may supply a current module. A new aggregate/report/export belongs to one reviewed snapshot even when computations are reused. Old/cancelled writes, changed-source suggestions, stale exports and cross-owner access retain existing guards. Stable suggestions with unchanged source inputs/content retain text and completion; affected suggestions require confirmation.
+
+**Counterexamples / evidence:** summary/duties edits must not call timeline; weight edits call match only; dates update temporal scoring/risk but not independent learning/motivation; company changes targeting only; toggles do not recompute siblings; failed modules retry while healthy results persist; changed rules and legacy inputs never reuse unproven results. Count actual runner calls and compare incremental output with a fresh engine reference on synthetic mutations, then test cancellation, restore, todo and same-version export. Browser shows changed fields and planned/actual reuse, with source history accessible.
+
+**Owners:** backend Coder owns dependency helper and projection tests; root owns engine/workflow/store integration, simulation/API regressions and docs; frontend Coder owns display/browser cases; independent Reviewer challenges composition. Test with isolated data and port before updating the default 8766 runtime; resolve QA processes afterward.
+
+**Follow-up completion:** dependency fingerprints, validated section reuse, current-snapshot aggregation and modification inheritance are implemented. Actual 100-edit owned HTTP simulation executes 215 runner calls instead of 500, with every output compared against fresh full computation. Full backend 375/375, final Chrome 48/48, Node 13/13 and 5-page mixed-reuse PDF checks pass. Independent review caught rule ABA and UI company edits clearing custom requirements; both were reproduced before repair and verified after. The rule-content change adoption guard was also repaired. Product commits are `563e317` and `91fc475`. Default 8766 now serves the final source/build and verified asset hash; isolated 8767 is closed. No new worktree, push or main merge. The unresolved refinement from the original checkpoint below is now complete; real-user accuracy remains outside this synthetic acceptance.
+
+## Completion checkpoint — original V3 round
 
 Why chain remains source/draft → confirmed snapshot → valid modules → explicit edits/completion → same-version exports. The final discriminating checks were all-failed retry in a real service/Chrome, two-sided conflict evidence in an owned download, and revocation of old confirmation during repeated requirement preparation. All reproduced correctness defects are closed and independently reviewed.
 
