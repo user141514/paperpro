@@ -118,3 +118,11 @@ V3 首轮独立 Reviewer 累计复现并关闭 11 项 P2；该轮已审范围内
 本轮证据目录为 `E:/codex-acceptance/paperpro-field-recompute-20261030/`，包含 `backend-junit.xml`、`frontend-recompute-evidence.json`、真实网络记录、截图、`pdf-evidence.json` 及合成导出。依赖 helper 证据另位于 `E:/codex-acceptance/paperpro-min-recompute-20261031/dependency-helper-evidence.json`。这轮全部使用合成数据与本地确定性计算，没有外发简历或调用真实 LLM。
 
 后端产品提交 `563e317`、前端产品提交 `91fc475`，位于本地 `feat/v3-checklist-20261030`；没有合并 main 或推送远端。文档另作本地提交。默认 `http://127.0.0.1:8766/` 已重启到最终源码和构建，健康检查通过，HTTP 返回的 bundle SHA-256 与已验收的 `c139a8e54197881eb4aef888f78c5aba3e259cc85d79e5ec82d318ca9c33d950` 相同。8767 隔离 QA 已停止；既有三份未跟踪研究文件保持原样。
+
+## 本地 main 合并验收（2026-10-30）
+
+用户明确要求合并后，已获取远端 main 并确认没有分叉。本地 main 从 `8a8293e` 快进至 `612cecf`，包含 V3 与字段级最小重算的全部 11 个提交；合并结果与已验收功能分支的 Git tree 完全相同，无冲突。已清理合并完成的本地 `feat/v3-checklist-20261030` 分支，保留主检出及既有三份研究文件。
+
+合并后重新运行完整后端，**375/375 通过**，0 failures、0 errors、0 skipped，65.36 秒；前端 Node **13/13 通过**。本机 8766 健康检查正常，实际 HTTP bundle 与最终验收哈希一致。证据位于 `E:/codex-acceptance/paperpro-main-merge-20261030/backend-junit-612cecf.xml` 和同目录 `runtime-final.json`。原有 Word COM 回归仍打印已记录的 Windows RPC 诊断，测试进程退出码为 0。
+
+本次完成的是本地 main 合并，尚未推送远端。
