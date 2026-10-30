@@ -6,6 +6,7 @@ Computed dates and weights remain authoritative; prose can only explain them.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from copy import deepcopy
 from hashlib import sha256
 import json
 import math
@@ -16,7 +17,7 @@ from .schema import validate_requirements
 from .quality import validate_resume_for_diagnosis
 from .claim_conflicts import detect_description_conflicts
 from .scoring import (
-    _contains, _find, _refs, _profile, calculate_timeline, load_rules,
+    _contains, _find, _refs, _profile, calculate_timeline, load_rules, frozen_rules,
     score_match, weight_sensitivity, evaluate_ordinal_benchmarks, rules_prompt,
 )
 
@@ -402,10 +403,11 @@ def _validate_section(name, result, resume):
         raise ValueError("诊断证据没有指向当前简历的真实字段")
 
 
+@frozen_rules()
 def run_diagnosis(
     resume: CandidateResume, target: Target, *,
     enabled_sections: list[str] | None = None, as_of: str | None = None,
-    requirements=None, on_section=None, should_cancel=None,
+    requirements=None, on_section=None, should_cancel=None, reusable_sections=None,
 ) -> dict:
     today=as_of or date.today().isoformat()
     date.fromisoformat(today)
@@ -415,24 +417,41 @@ def run_diagnosis(
     if not selected or selected-set(RUNNERS):
         raise ValueError("请至少开启一个有效诊断模块")
     sections={}
+    computed, reused = [], []
     for key,runner in RUNNERS.items():
         if key not in selected:
             sections[key]={"status":"disabled","conclusion":"已按用户选择关闭该维度"}
         elif should_cancel and should_cancel():
             sections[key]={"status":"cancelled","conclusion":"已取消，未继续执行此模块"}
         else:
-            try:
-                result=(runner(resume,target,today,requirements) if key=="match" else runner(resume,target,today))
-                _validate_section(key,result,resume)
-                result.setdefault("summary",result.get("conclusion",result.get("summary","已完成证据核对")))
-                result.setdefault("limitations",[result["caveat"]] if result.get("caveat") else [])
-                result.setdefault("version_info",{"rules_version":load_rules()["version"],"as_of":today})
-                sections[key]=result
-            except Exception:
-                sections[key]={"status":"error","conclusion":"此维度未能生成有效证据结果，请检查输入后重试"}
+            cached = (reusable_sections or {}).get(key)
+            if cached:
+                try:
+                    cached = deepcopy(cached)
+                    cached.pop("ai_commentary", None)
+                    _validate_section(key, cached, resume)
+                except (ValueError, TypeError, KeyError):
+                    cached = None
+            if cached:
+                sections[key] = cached
+                reused.append(key)
+            else:
+                computed.append(key)
+                try:
+                    result=(runner(resume,target,today,requirements) if key=="match" else runner(resume,target,today))
+                    _validate_section(key,result,resume)
+                    result.setdefault("summary",result.get("conclusion",result.get("summary","已完成证据核对")))
+                    result.setdefault("limitations",[result["caveat"]] if result.get("caveat") else [])
+                    result.setdefault("version_info",{"rules_version":load_rules()["version"],"as_of":today})
+                    sections[key]=result
+                except Exception:
+                    sections[key]={"status":"error","conclusion":"此维度未能生成有效证据结果，请检查输入后重试"}
         if on_section:
             on_section(key,sections[key])
-    return rebuild_report(resume,target,sections,today,requirements)
+    report = rebuild_report(resume,target,sections,today,requirements)
+    report["meta"]["recompute"] = {"recomputed": computed, "reused": reused,
+        "disabled": [name for name in RUNNERS if name not in selected], "changed_fields": []}
+    return report
 
 
 def rebuild_report(resume: CandidateResume, target: Target, sections: dict, as_of: str, requirements=None) -> dict:

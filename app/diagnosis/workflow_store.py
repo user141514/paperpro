@@ -9,6 +9,8 @@ from pathlib import Path
 import sqlite3
 from uuid import uuid4
 
+from .dependencies import module_fingerprints, recompute_plan
+
 
 def stamp():
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
@@ -26,6 +28,15 @@ class WorkflowError(Exception):
 
 def input_key(state):
     return encoded({k: state.get(k) for k in ("resume", "target", "requirements", "enabled_sections", "as_of")})
+
+
+def path_value(value, path):
+    try:
+        for key in path.split("."):
+            value = value[int(key)] if isinstance(value, list) else value[key]
+        return value
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
 
 
 def flattened(value, path="", include_blank=False):
@@ -180,13 +191,31 @@ class TaskStore:
                 "updated_at": task["updated_at"]}
 
     def run_view(self, run, task=None):
-        stale = task is not None and (run["input_revision"] != task["input_revision"] or run["status"] == "cancelled")
+        snapshot, report = json.loads(run["snapshot"]), json.loads(run["report"] or "null")
+        state = json.loads(task["state"]) if task is not None else snapshot
+        inputs = {**state, "document_version_id": task["document_id"] if task is not None else snapshot.get("document_version_id", "")}
+        plan = recompute_plan(snapshot, inputs, (report or {}).get("dimensions", {}))
+        if run["status"] == "running" and snapshot.get("recompute"):
+            plan = snapshot["recompute"]
+        fingerprints = module_fingerprints(inputs)
+        changed_modules = {name for name in state.get("enabled_sections", [])
+                           if snapshot.get("module_fingerprints", {}).get(name) != fingerprints[name]}
+        changed_modules.update(set(snapshot.get("enabled_sections", [])) - set(state.get("enabled_sections", [])))
+        stale = task is not None and (run["input_revision"] != task["input_revision"] or run["status"] == "cancelled" or bool(changed_modules))
         modifications = json.loads(run["modifications"])
         if stale:
-            modifications = {key: {**value, "status": "needs_confirmation"} for key, value in modifications.items()}
+            suggestions = {item["id"]: item for item in (report or {}).get("suggestions", [])}
+            for key, value in modifications.items():
+                suggestion = suggestions.get(key, {})
+                changed_source = any(path_value(snapshot.get("resume"), suggestion[path]) != path_value(state.get("resume"), suggestion[path])
+                                     for path in ("location", "related_location") if suggestion.get(path))
+                if (not suggestion.get("source_modules") or changed_modules.intersection(suggestion["source_modules"])
+                        or changed_source or run["status"] == "cancelled"):
+                    modifications[key] = {**value, "status": "needs_confirmation"}
         return {"id": run["id"], "operation_id": run["id"], "status": run["status"], "revision": run["revision"],
-                "snapshot": json.loads(run["snapshot"]), "report": json.loads(run["report"] or "null"),
+                "snapshot": snapshot, "report": report,
                 "module_status": json.loads(run["modules"]), "stale": stale, "modifications": modifications,
+                "recompute": plan, "affected_modules": plan["recomputed"],
                 "created_at": run["created_at"], "finished_at": run["finished_at"], "error": run["error"]}
 
     def get(self, task_id, owner):
@@ -346,7 +375,7 @@ class TaskStore:
         with self.write() as db:
             task = self.owned(db, task_id, owner); self.expected(task, revision)
             op = db.execute("SELECT * FROM operations WHERE id=?", (task["current_run"],)).fetchone()
-            if not op or not op["report"] or op["status"] in {"running", "cancelled", "failed"} or op["input_revision"] != task["input_revision"]:
+            if not op or not op["report"] or op["status"] in {"running", "cancelled", "failed"} or self.run_view(op, task)["stale"]:
                 raise WorkflowError(409, "建议依据已变化，请重新检查后再操作")
             report = json.loads(op["report"])
             suggestion = next((x for x in report.get("suggestions", []) if x["id"] == suggestion_id), None)

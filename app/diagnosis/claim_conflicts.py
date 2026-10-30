@@ -118,6 +118,11 @@ def _read_claims(ref: dict, term: str) -> list[tuple[str, str, dict]]:
     return claims
 
 
+def conflict_refs(resume: CandidateResume) -> list[dict]:
+    """Exact bounded inputs: apply the global limit before selecting scopes."""
+    return [ref for ref in _refs(resume)[:350] if _scope(ref["path"])]
+
+
 def detect_description_conflicts(
     resume: CandidateResume, *, limit: int = 12,
 ) -> list[dict]:
@@ -131,7 +136,7 @@ def detect_description_conflicts(
         return []
     terms = _technical_terms()
     observed: dict[tuple[str, str], dict[str, list[tuple[str, dict]]]] = {}
-    for ref in _refs(resume)[:350]:
+    for ref in conflict_refs(resume):
         scope = _scope(ref["path"])
         if not scope:
             continue

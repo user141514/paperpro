@@ -5,6 +5,9 @@ Weights are explicit, versioned hypotheses. Missing evidence is labeled as such.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 from datetime import date
 import json
 from pathlib import Path
@@ -14,6 +17,7 @@ import re
 from .schema import CandidateResume, Target, validate_requirements
 
 RULES_PATH = Path(__file__).with_name("rules.json")
+_OPERATION_RULES = ContextVar("paperpro_operation_rules", default=None)
 ALL_SECTIONS = ("match", "experience", "potential", "motivation", "verification")
 ENGLISH = re.compile(r"^[a-z0-9][a-z0-9.+_-]*$", re.I)
 DATE = re.compile(r"^((?:19|20)\d\d)[./-](0?[1-9]|1[0-2])$")
@@ -24,6 +28,9 @@ YEAR_REQUIREMENT = re.compile(
 
 
 def load_rules() -> dict:
+    frozen = _OPERATION_RULES.get()
+    if frozen is not None:
+        return frozen
     data = json.loads(RULES_PATH.read_text(encoding="utf-8"))
     ids = [x["id"] for x in data["factors"]]
     if len(ids) < 6 or len(ids) != len(set(ids)):
@@ -37,6 +44,17 @@ def load_rules() -> dict:
         if any(v < 0 or v > 1 for v in profile["weights"].values()):
             raise ValueError("岗位权重范围必须为 0..1")
     return data
+
+
+@contextmanager
+def frozen_rules(rules=None):
+    """One operation reads one rule value, isolated from other request threads."""
+    snapshot = deepcopy(load_rules() if rules is None else rules)
+    token = _OPERATION_RULES.set(snapshot)
+    try:
+        yield snapshot
+    finally:
+        _OPERATION_RULES.reset(token)
 
 
 def rules_prompt() -> str:

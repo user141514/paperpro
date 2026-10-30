@@ -41,7 +41,7 @@ def text_value(value, depth=0):
     return labels.get(str(value), str(value))
 
 
-def module_lines(name, section):
+def module_lines(name, section, provenance=None):
     result = [NAMES.get(name, name) + "（" + STATUS.get(section.get("status"), "未完成") + "）",
               section.get("conclusion") or section.get("summary", "")]
     fields = {
@@ -57,7 +57,12 @@ def module_lines(name, section):
             result.extend([label + "：", "未知，需核实" if value is None else text_value(value)])
     result.extend(str(x) for x in section.get("limitations", []))
     version = section.get("version_info", {})
-    result.append(f"模块规则：{version.get('rules_version', '未执行')}；基准日：{version.get('as_of', '未执行')}")
+    result.append(f"模块规则：{version.get('rules_version', '未执行')}；原计算基准日：{version.get('as_of', '未执行')}")
+    if provenance and section.get("status") == "ok":
+        mode = "复用" if provenance.get("mode") == "reused" else "重新计算"
+        result.append(f"本次处理：{mode}；本次核对基准日：{provenance.get('validated_as_of')}；核对输入版本：{provenance.get('validated_revision')}")
+        if provenance.get("mode") == "reused":
+            result.append("原计算报告：" + str(provenance.get("origin_run_id")))
     return result + [""]
 
 
@@ -76,6 +81,10 @@ def export_text(run, kind):
              "有效范围：" + "、".join(NAMES.get(name, name) for name in valid),
              "未覆盖模块：" + ("、".join(f"{NAMES.get(name, name)}（{STATUS.get(section.get('status'), '未完成')}）" for name, section in dimensions.items() if name not in valid) or "无"),
              "本内容用于个人改进与面试准备；缺失信息需要补充核实，不能据此认定本人不具备相关能力。", ""]
+    recompute = meta.get("recompute")
+    if recompute:
+        lines.extend(["本次重算：" + ("、".join(NAMES.get(name, name) for name in recompute.get("recomputed", [])) or "无"),
+                      "本次复用：" + ("、".join(NAMES.get(name, name) for name in recompute.get("reused", [])) or "无"), ""])
     count = 0
     if kind == "todo":
         for item in report.get("suggestions", []):
@@ -100,7 +109,7 @@ def export_text(run, kind):
             raise WorkflowError(422, "本次没有可导出的面试准备项")
     else:
         for name, section in dimensions.items():
-            lines.extend(module_lines(name, section))
+            lines.extend(module_lines(name, section, meta.get("module_provenance", {}).get(name)))
         lines.extend(["优化建议（局部示例，不构成完整替换简历）", text_value(report.get("suggestions", [])), "面试准备", text_value(report.get("interview_questions", []))])
         count = len(valid)
     text = "\n".join(lines)

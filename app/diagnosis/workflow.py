@@ -16,8 +16,10 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .adapter import from_text
 from .engine import rebuild_report, run_diagnosis
+from .dependencies import module_fingerprints, recompute_plan
 from .narrative import add_ai_explanations
 from .quality import validate_resume_for_diagnosis
+from .scoring import frozen_rules, load_rules
 from .schema import CandidateResume, DiagnosisRequest
 from .workflow_store import TaskStore, WorkflowError, critical_values, encoded
 
@@ -239,19 +241,51 @@ async def execute(task_id, data, identity, repository, retry=None):
     previous = task["current_run"]
     if retry and (retry not in request.enabled_sections or not previous or previous["stale"] or not previous["report"]):
         raise WorkflowError(409, "当前模块不可重试；输入变化后请重新生成报告")
+    inputs = {**task["state"], "document_version_id": task["document_version_id"]}
+    rules = load_rules()
+    usable_previous = previous if previous and previous["report"] and previous["status"] not in {"running", "cancelled"} else None
+    old_sections = usable_previous["report"]["dimensions"] if usable_previous else {}
+    with frozen_rules(rules):
+        fingerprints = module_fingerprints(inputs)
+        plan = recompute_plan(usable_previous["snapshot"] if usable_previous else {}, inputs, old_sections)
+    if retry:
+        plan.update(recomputed=[retry], reused=[name for name, section in old_sections.items()
+            if name != retry and name in request.enabled_sections and section.get("status") == "ok"])
+    reusable = {name: old_sections[name] for name in plan["reused"]}
     snapshot = {**{key: task["state"][key] for key in ("resume", "target", "requirements", "enabled_sections", "as_of", "confirmed_fields")},
                 "document_version_id": task["document_version_id"], "revision": task["revision"], "retry_module": retry,
-                "rule_version": "candidate-v3-20261030"}
+                "rule_version": "candidate-v3-20261030", "module_fingerprints": fingerprints,
+                "recompute": {**plan, "source_run_id": usable_previous["id"] if usable_previous else None}}
     if not repository.begin(task_id, identity, data.expected_revision, data.operation_id, "retry" if retry else "diagnosis", snapshot):
         return repository.get(task_id, identity)
+    @frozen_rules(rules)
     def generate():
-        result = run_diagnosis(request.resume, request.target, enabled_sections=[retry] if retry else request.enabled_sections,
+        arguments = dict(enabled_sections=[retry] if retry else request.enabled_sections,
             as_of=request.as_of, requirements=request.requirements,
             on_section=lambda name, section: repository.module(task_id, data.operation_id, name, section),
             should_cancel=lambda: not repository.active(task_id, identity, data.operation_id))
+        if not retry:
+            arguments["reusable_sections"] = reusable
+        result = run_diagnosis(request.resume, request.target, **arguments)
+        executed = result["meta"]["recompute"]
         if retry and repository.active(task_id, identity, data.operation_id):
             sections = {**previous["report"]["dimensions"], retry: result["dimensions"][retry]}
             result = rebuild_report(request.resume, request.target, sections, request.as_of, requirements=request.requirements)
+            executed = {**plan}
+        result["meta"]["recompute"] = {**executed, "changed_fields": plan["changed_fields"],
+            "source_run_id": usable_previous["id"] if usable_previous else None}
+        provenance = {}
+        for name, section in result["dimensions"].items():
+            from_previous = name not in executed["recomputed"] and usable_previous and name in old_sections
+            origin = (usable_previous["report"].get("meta", {}).get("module_provenance", {}).get(name, {})
+                      if from_previous else {})
+            provenance[name] = {"mode": "disabled" if section.get("status") == "disabled" else
+                "reused" if name in executed["reused"] else "retained" if from_previous else "computed",
+                "source_run_id": usable_previous["id"] if from_previous else None,
+                "origin_run_id": origin.get("origin_run_id", usable_previous["id"] if from_previous else data.operation_id),
+                "input_fingerprint": fingerprints[name], "computed_as_of": section.get("version_info", {}).get("as_of"),
+                "validated_as_of": request.as_of, "validated_revision": task["revision"]}
+        result["meta"]["module_provenance"] = provenance
         if data.use_ai and repository.active(task_id, identity, data.operation_id):
             try:
                 add_ai_explanations(result, request_api_key=data.api_key, provider=data.ai_provider)
@@ -262,17 +296,21 @@ async def execute(task_id, data, identity, repository, retry=None):
         return result
     try:
         report = await run_in_threadpool(generate)
+        if module_fingerprints(inputs) != fingerprints:
+            raise ValueError("规则在本次计算期间变化，不能发布混合结果")
         inherited = None
-        if retry:
+        if usable_previous:
             before = {item["id"]: item for item in previous["report"].get("suggestions", [])}
             after = {item["id"]: item for item in report.get("suggestions", [])}
             def content(item):
-                return {key: value for key, value in item.items() if key not in {"report_scope", "uncovered_modules"}}
+                return {key: value for key, value in item.items() if key not in {"report_scope", "uncovered_modules", "target"}}
             inherited = {}
             for key, modification in previous["modifications"].items():
                 if key not in after or key not in before:
                     continue
-                unaffected = retry not in before[key].get("source_modules", []) and content(before[key]) == content(after[key])
+                old_fingerprints = usable_previous["snapshot"].get("module_fingerprints", {})
+                unaffected = all(old_fingerprints.get(name) == fingerprints[name] for name in before[key].get("source_modules", []))
+                unaffected = unaffected and content(before[key]) == content(after[key])
                 inherited[key] = dict(modification) if unaffected else {**modification, "status": "needs_confirmation", "completed_at": None, "adopted_at": None}
         return repository.finish_run(task_id, identity, data.operation_id, report, modifications=inherited)
     except WorkflowError:
