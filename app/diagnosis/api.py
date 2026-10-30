@@ -8,7 +8,7 @@ from hashlib import sha256
 from io import BytesIO
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -21,12 +21,24 @@ from .engine import run_diagnosis
 from .narrative import add_ai_explanations
 from .pdf_layout import augment_missing_fields_from_pdf
 from .work_relation import propose_existing_work_relations
-from .schema import DiagnosisRequest, PasteRequest, SelectionRequest
+from .schema import DiagnosisRequest, PasteRequest, RequirementsRequest, SelectionRequest
+from .requirements import prepare_requirements
 from .scoring import load_rules
 
 router = APIRouter(prefix="/api/diagnosis")
 LIMIT_BYTES = 10 * 1024 * 1024
 FORMATS = {".pdf",".doc",".docx",".png",".jpg",".jpeg"}
+
+
+class ParsedResumeResponse(TypedDict):
+    status: str
+    filename: str
+    method: str
+    sha256: str
+    resume: dict
+    source_text: str
+    warnings: list[str]
+    review_hints: list[dict]
 
 
 @router.get("/rules")
@@ -54,19 +66,36 @@ async def parse_uploaded(file: UploadFile = File(...)):
         raise HTTPException(status_code=413,detail="单个文件不能超过 10 MB，请压缩后重试")
     if not original:
         raise HTTPException(status_code=422,detail="文件为空，请重新选择")
-    checksum=sha256(original).hexdigest()
     try:
-        text,warnings,method=extract_file(file.filename or "resume"+suffix,original)
+        return parse_document(file.filename or "resume"+suffix, original)
     except (ValueError,TypeError) as exc:
         raise HTTPException(status_code=422,detail=str(exc)) from exc
+
+
+def parse_document(filename: str, content: bytes, should_cancel=None) -> ParsedResumeResponse:
+    """One synchronous extraction primitive for HTTP and owned task workers."""
+    def check_cancelled():
+        if should_cancel and should_cancel():
+            raise ValueError("解析已取消")
+
+    suffix=Path(filename).suffix.lower()
+    if suffix not in FORMATS:
+        raise ValueError("支持 PDF、Word（DOC/DOCX）及 PNG/JPG，或直接粘贴文本")
+    if len(content)>LIMIT_BYTES:
+        raise ValueError("单个文件不能超过 10 MB")
+    checksum=sha256(content).hexdigest()
+    check_cancelled()
+    text,warnings,method=extract_file(filename,content)
+    check_cancelled()
     # Source SHA is of the exact uploaded bytes, not re-serialized content.
     from app.parser import parse_resume
     draft=convert_resume(parse_resume(text),raw_text=text,fingerprint=checksum)
     review_hints=[]
     if suffix==".pdf" and method=="pdf-text":
+        check_cancelled()
         try:
             draft,additional=augment_missing_fields_from_pdf(
-                draft,original,method=method,
+                draft,content,method=method,
             )
             if additional:
                 warnings.append(
@@ -77,9 +106,10 @@ async def parse_uploaded(file: UploadFile = File(...)):
         except (ValueError,OSError,TypeError):
             # The old deterministic parser is still the source of truth.
             warnings.append("多栏辅助识别未完成；已保留常规解析结果，请人工核对。")
+        check_cancelled()
         try:
             review_hints=propose_existing_work_relations(
-                draft,original,method=method,
+                draft,content,method=method,
             )
             if review_hints:
                 warnings.append(
@@ -88,7 +118,8 @@ async def parse_uploaded(file: UploadFile = File(...)):
                 )
         except (ValueError,OSError,TypeError):
             warnings.append("职位排版提示未完成；已保留原有经历字段，请人工核对。")
-    return {"status":"ok","filename":Path(file.filename or "").name,
+    check_cancelled()
+    return {"status":"ok","filename":Path(filename).name,
             "method":method,"sha256":checksum,"resume":draft.model_dump(),
             "source_text":text,"warnings":warnings,"review_hints":review_hints}
 
@@ -113,6 +144,7 @@ def generate_report(request: DiagnosisRequest):
             request.resume,request.target,
             enabled_sections=request.enabled_sections,
             as_of=request.as_of,
+            requirements=request.requirements,
         )
         if request.use_ai:
             try:
@@ -127,7 +159,12 @@ def generate_report(request: DiagnosisRequest):
         return report
     except (ValueError, OSError, KeyError) as exc:
         # No user data or provider secrets in responses.
-        raise HTTPException(status_code=422,detail="诊断参数或规则表无效，请检查日期与配置") from exc
+        raise HTTPException(status_code=422,detail="简历或诊断参数无效，请补充可分析的履历并检查日期、能力项与配置") from exc
+
+
+@router.post("/requirements")
+def requirements(request: RequirementsRequest):
+    return prepare_requirements(request.target)
 
 
 def _selected_items(payload: SelectionRequest) -> list[dict]:

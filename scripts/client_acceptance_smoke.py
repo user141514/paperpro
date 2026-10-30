@@ -76,12 +76,14 @@ def run(*, extended: bool = False) -> dict:
                and all(0<=x["coefficient"]<=1 for x in match["requirements"])
                and 0<=match["score"]<=100,
                "seven explicit criteria + coefficients + score")
-        record("R7-5/R7-6",len(suggestions)>=8 and all(
+        record("R7-5/R7-6",bool(suggestions) and all(
             all(item.get(k) for k in ("id","location","original",
                                     "problem","action","example","priority"))
             and item.get("assessment") in ("需要修正","可选深化")
+            and item.get("source_modules")
+            and all(sections[key]["status"] == "ok" for key in item["source_modules"])
             for item in suggestions
-        ),"at least eight fully formed evidence-linked advice entries")
+        ),"actual findings produce fully formed evidence-linked advice; no fixed-count padding")
 
         selected=[suggestions[0]["id"],suggestions[-1]["id"]]
         exported=client.post("/api/diagnosis/export",json={
@@ -102,9 +104,11 @@ def run(*, extended: bool = False) -> dict:
         record("R9-3",sections["experience"]["dated_entries"]>=1 and
                isinstance(sections["experience"]["months_total"],int),
                "code-derived employment timeline")
-        record("R9-4/R9-5",len(sections["potential"]["supporting_signals"])>=3
+        support=sections["potential"]["supporting_signals"]
+        record("R9-4/R9-5",all(item.get("status")=="支持" and item.get("original") and item.get("path") for item in support)
+               and (len(support)>=3 or sections["potential"]["rating"]=="无法判断")
                and bool(sections["motivation"]["rationale"]),
-               "traceable potential and motivation")
+               "only genuine supporting evidence is listed; insufficient potential remains unknown")
         record("R9-6/R9-7",all(
             i.get("location") and i.get("original")
             for i in sections["verification"]["issues"]

@@ -154,20 +154,17 @@ def test_no_identity_or_irrelevant_skill_bonus():
     assert score_match(a,target())["score"] == score_match(b,target())["score"]
 
 
-def test_only_company_target_is_allowed_but_uncalibrated():
-    result=score_match(candidate(),Target(company="从未提供岗位描述的公司"))
-    assert result["confidence"]=="低"
-    assert result["job_fit_applicable"] is False
-    assert "不能用于岗位分层" in result["score_kind"]
-    assert "仅" in result["calibration_warning"] or "未" in result["calibration_warning"]
-    assert len(result["requirements"])>=6
+def test_company_without_required_role_is_rejected():
+    with pytest.raises(ValueError, match="目标职位"):
+        Target(company="从未提供岗位描述的公司")
 
 
 def test_unsupported_years_are_not_inferred():
     a=candidate(); a.experience[0].start_date="";a.experience[0].end_date="";a.experience[0].heading="示例科技 | 后端开发工程师"
     t=calculate_timeline(a, as_of="2026-10-19")
     assert t["dated_entries"] == 0
-    assert t["months_total"]==0
+    assert t["months_total"] is None
+    assert t["total_status"] == "unknown"
     assert "未知" in t["summary"] or "未" in t["summary"]
 
 
@@ -254,7 +251,8 @@ def test_five_blocks_nonfatal_isolation_and_report_quality():
     assert set(report["dimensions"])=={"match","experience","potential","motivation","verification"}
     assert all(v["status"]=="ok" for v in report["dimensions"].values())
     assert report["meta"]["rules_version"]==load_rules()["version"]
-    assert len(report["suggestions"])>=8
+    assert report["suggestions"]
+    assert all(s["source_modules"] for s in report["suggestions"])
     assert len({x["id"] for x in report["suggestions"]})==len(report["suggestions"])
     for s in report["suggestions"]:
         assert all(s.get(k) for k in ("id","location","original","problem","action","example","priority"))
@@ -268,12 +266,16 @@ def test_disabled_dimension_does_not_cascade():
     assert report["dimensions"]["match"]["status"]=="ok"
     assert report["dimensions"]["experience"]["status"]=="disabled"
     assert report["dimensions"]["verification"]["status"]=="ok"
-    assert len(report["suggestions"])>=8
+    assert all(set(s["source_modules"]) <= {"match","verification"} for s in report["suggestions"])
 
 
 def test_potential_claims_are_evidence_linked_or_explicit_unknown():
-    result=run_diagnosis(candidate("empty"),target(),as_of="2026-10-19")["dimensions"]["potential"]
+    sparse=candidate("empty")
+    sparse.skills=["Python"]
+    result=run_diagnosis(sparse,target(),as_of="2026-10-19")["dimensions"]["potential"]
     assert result["status"]=="ok"
+    assert result["rating"]=="无法判断"
+    assert result["supporting_signals"]==[]
     for item in result["supporting_signals"]:
         assert item.get("path") and item.get("status")
         if item["status"]=="支持":

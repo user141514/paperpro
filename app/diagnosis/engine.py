@@ -8,9 +8,12 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
+import math
 import re
 
 from .schema import CandidateResume, Target
+from .schema import validate_requirements
+from .quality import validate_resume_for_diagnosis
 from .claim_conflicts import detect_description_conflicts
 from .scoring import (
     _contains, _find, _refs, _profile, calculate_timeline, load_rules,
@@ -100,14 +103,13 @@ def _potential(resume: CandidateResume, target: Target, as_of: str) -> dict:
                            if ref else "简历未显示这一信号，不代表候选人不具备该能力"),
         })
     num=sum(item["status"]=="支持" for item in signals)
-    rating="高" if num>=4 else "中" if num>=2 else "低"
+    rating="高" if num>=4 else "中" if num>=3 else "无法判断"
     supporting=[item for item in signals if item["status"]=="支持"][:3]
-    # If insufficient evidence, show the missing slots instead of fabricated facts.
-    supporting += [item for item in signals if item["status"]!="支持"][:max(0,3-len(supporting))]
     needed=next((i for i in signals if i["status"]!="支持"),None)
     return {
         "status":"ok",
         "rating":rating,
+        "evidence_count":num,
         "supporting_signals":supporting,
         "signals":signals,
         "weakness":{
@@ -117,7 +119,8 @@ def _potential(resume: CandidateResume, target: Target, as_of: str) -> dict:
             "signal":"成果的来源与可信度",
             "action":"选择最重要的两项成果，补充可核实的职责和计算口径。"
         },
-        "conclusion":f"五个明确可见证据信号中有 {num} 项；该评级表示简历证据充足度，不是心理能力测验。",
+        "conclusion":f"五个明确可见证据信号中有 {num} 项；" + ("证据不足，暂时无法判断。" if num<3 else "该评级表示简历证据充足度，不是心理能力测验。"),
+        "limitations":(["可观察的学习与发展信号不足三类，不能形成可靠评级。"] if num<3 else []),
         "caveat":"真实学习速度、能力潜力无法仅凭简历确定；评级不可用于人格或智力判断。",
     }
 
@@ -215,10 +218,15 @@ def _advice(resume: CandidateResume, target: Target, dimensions: dict) -> list[d
                 return found
         return {"path":paths[0],"original":"（该字段未填写）"}
     match=dimensions.get("match",{})
-    missing_hard=[r for r in match.get("requirements",[]) if r["status"]=="简历未体现"
-                  and r["id"] in {"skills","function","experience"}]
-    weak_ids={r["id"] for r in missing_hard}
-    matched={item["id"]:item for item in match.get("requirements",[])}
+    missing_hard=[r for r in match.get("requirements",[]) if r["status"] in {"简历未体现","明确不满足"}
+                  and r.get("factor_id", r["id"]) in {"skills","function","experience"}]
+    weak_ids={r.get("factor_id",r["id"]) for r in missing_hard}
+    hard_ids={r.get("factor_id",r["id"]) for r in missing_hard if r.get("hard_gate",True)}
+    matched={}
+    for item in match.get("requirements",[]):
+        factor=item.get("factor_id",item["id"])
+        if factor not in matched or item["coefficient"] < matched[factor]["coefficient"]:
+            matched[factor]=item
     verification_issues=dimensions.get("verification",{}).get("issues",[])
     metric_issues=[issue for issue in verification_issues if issue.get("type")=="成果计算口径可追问"]
     timeline_issues=[issue for issue in verification_issues
@@ -229,16 +237,16 @@ def _advice(resume: CandidateResume, target: Target, dimensions: dict) -> list[d
     templates=[
         ("岗位定位不明确","title","现有职位表述与目标岗位之间缺少直接连接。",
          "在求职方向写明实际匹配的岗位方向。",
-         "求职方向：[真实具备经验的目标职位]", "高" if "function" in weak_ids else "中"),
+         "求职方向：[真实具备经验的目标职位]", "高" if "function" in hard_ids else "中"),
         ("关键技能证据不足","skills","目标岗位技能的书面证据不够完整。",
          "仅补充真实掌握的技能，并在实际项目中对应到使用场景。",
-         "技能：[已掌握的技术]；项目中实际使用方式：[对应任务]", "高" if "skills" in weak_ids else "中"),
+         "技能：[已掌握的技术]；项目中实际使用方式：[对应任务]", "高" if "skills" in hard_ids else "中"),
         ("个人概述缺乏针对性","summary","简介未明确说明与目标岗位最相关的经历。",
          "保留真实职责，按工作领域→核心技能→可验证事项组织。",
          "曾在[真实业务领域]参与[真实职责]，主要使用[已掌握技能]。", "中"),
         ("工作职责需要更具体","experience","岗位经历中的行为边界或交付责任可能不够清晰。",
          "写明本人负责哪一步、和谁协作、交付了什么。",
-         "负责[真实任务]的[本人具体部分]，交付[有证据支持的成果]。", "高" if "experience" in weak_ids else "中"),
+         "负责[真实任务]的[本人具体部分]，交付[有证据支持的成果]。", "高" if "experience" in hard_ids else "中"),
         ("项目经历与岗位关联偏弱","projects","项目描述可能未显式证明目标岗位要求。",
          "每个项目选择一项与目标岗位直接相关的实际技能、问题和结果。",
          "项目[真实名称]：使用[真实工具]解决[真实问题]。", "中"),
@@ -257,6 +265,20 @@ def _advice(resume: CandidateResume, target: Target, dimensions: dict) -> list[d
     ]
     advice=[]
     for i,(title,group,problem,action,example,priority) in enumerate(templates,1):
+        source_modules = {
+            1:["match"] if "function" in weak_ids else [],
+            2:["match"] if "skills" in weak_ids else [],
+            3:["motivation"] if dimensions.get("motivation",{}).get("rating") in {"低","中"} and bool(resume.summary.strip()) else [],
+            4:["match"] if "experience" in weak_ids else [],
+            5:["match"] if matched.get("projects",{}).get("status") == "简历未体现" else [],
+            6:["verification"] if metric_issues else [],
+            7:["verification"] if timeline_issues else [],
+            8:["potential"] if dimensions.get("potential",{}).get("evidence_count",0) < 3 and dimensions.get("potential",{}).get("status") == "ok" else [],
+            9:["motivation"] if dimensions.get("motivation",{}).get("rating") == "低" and not resume.summary.strip() else [],
+        }[i]
+        source_modules = [key for key in source_modules if dimensions.get(key,{}).get("status") == "ok"]
+        if not source_modules:
+            continue
         assessment="需要修正"
         ref=first([group,"summary"] if group != "skills" else ["skills.0","summary"])
         if i==1 and resume.title.strip() and "function" not in weak_ids:
@@ -278,7 +300,7 @@ def _advice(resume: CandidateResume, target: Target, dimensions: dict) -> list[d
                 assessment="可选深化";priority="低"
                 problem="已填写具体工作职责；可按目标岗位需要提高重点交付物的可核查性。"
             elif not has_work_details:
-                priority="高" if target.role.strip() else "中"
+                priority="高" if "experience" in hard_ids else "中"
                 problem="简历中尚未展示可核对的工作或实习职责；可能影响岗位经验的初步判读。"
         elif i==5:
             project=matched.get("projects")
@@ -302,9 +324,9 @@ def _advice(resume: CandidateResume, target: Target, dimensions: dict) -> list[d
                 assessment="可选深化";priority="低"
                 problem="已提供的工作起止年月未触发时间冲突或明显空档提示；导出前可再次核对。"
         elif i==8:
-            if resume.certificates:
-                assessment="可选深化"
-                problem="已列出证书或认证信息；可在确有必要时补充取得日期与认证机构。"
+            title="学习与发展证据待补充"
+            problem="当前可观察的学习与发展信号不足，暂时无法判断；不表示缺少学习能力。"
+            action="补充真实完成的学习、职责扩展或成果材料；没有相应材料时保持待验证。"
         elif i==9 and dimensions.get("motivation",{}).get("rating")=="高":
             assessment="可选深化";priority="低"
             problem="已出现目标岗位的针对性表达；可进一步核实与岗位描述的具体联系。"
@@ -314,6 +336,7 @@ def _advice(resume: CandidateResume, target: Target, dimensions: dict) -> list[d
             "priority":priority,"location":ref["path"],"original":ref["original"],
             "problem":problem,"action":action,"example":example,
             "target":(target.role or target.company),
+            "source_modules":source_modules,
         })
     # Only concrete two-source contradictions receive a targeted correction
     # item. No missing skill or unverified inference is called a contradiction.
@@ -332,13 +355,14 @@ def _advice(resume: CandidateResume, target: Target, dimensions: dict) -> list[d
             "action":"逐条核对两处原文与真实能力、时期及本人负责内容；修正不准确的一处，不能照搬岗位JD补写经历。",
             "example":"[核实后，保留能够提供依据的一致描述]",
             "target":(target.role or target.company),
+            "source_modules":["verification"],
         })
     # High-priority suggestions must be linked to a real gap or two sources.
     return sorted(advice,key=lambda x:({"高":0,"中":1,"低":2}[x["priority"]],x["id"]))
 
 
 RUNNERS={
-    "match":lambda resume,target,as_of:score_match(resume,target,as_of=as_of),
+    "match":lambda resume,target,as_of,requirements=None:score_match(resume,target,as_of=as_of,requirements=requirements),
     "experience":_experience,
     "potential":_potential,
     "motivation":_motivation,
@@ -346,44 +370,119 @@ RUNNERS={
 }
 
 
+def _validate_section(name, result, resume):
+    required={"match":("requirements","score"), "experience":("timeline","months_total"),
+              "potential":("signals","supporting_signals","rating"),
+              "motivation":("rating","evidence"), "verification":("issues","questions")}
+    if not isinstance(result,dict) or result.get("status") != "ok" or any(key not in result for key in required[name]):
+        raise ValueError("模块没有形成结构完整的有效结果")
+    list_keys={"match":["requirements"],"experience":["timeline"],"potential":["signals","supporting_signals"],
+               "motivation":["evidence"],"verification":["issues","questions"]}
+    if any(not isinstance(result[key],list) for key in list_keys[name]):
+        raise ValueError("模块证据结构无效")
+    evidence=[]
+    if name=="match":
+        if not result["requirements"] or result["score"] is not None and not 0 <= result["score"] <= 100:
+            raise ValueError("评分模块没有有效要求或分数")
+        for row in result["requirements"]:
+            coefficient=row.get("coefficient")
+            if not isinstance(coefficient,(int,float)) or not math.isfinite(coefficient) or not 0 <= coefficient <= 1:
+                raise ValueError("匹配系数无效")
+            if not all(key in row for key in ("id","status","evidence_refs")) or not isinstance(row["evidence_refs"],list):
+                raise ValueError("评分项证据结构无效")
+            evidence.extend(row["evidence_refs"])
+    elif name=="potential":
+        evidence=result["supporting_signals"]
+        if any(item.get("status")!="支持" for item in evidence):
+            raise ValueError("未体现项不能作为支撑证据")
+    elif name=="motivation":
+        evidence=result["evidence"]
+    actual={(item["path"],item["original"]) for item in _refs(resume)}
+    if any(not isinstance(item,dict) or (item.get("path"),item.get("original")) not in actual for item in evidence):
+        raise ValueError("诊断证据没有指向当前简历的真实字段")
+
+
 def run_diagnosis(
     resume: CandidateResume, target: Target, *,
     enabled_sections: list[str] | None = None, as_of: str | None = None,
+    requirements=None, on_section=None, should_cancel=None,
 ) -> dict:
     today=as_of or date.today().isoformat()
-    # Validate before any partial computation.
     date.fromisoformat(today)
-    rules=load_rules()
+    validate_resume_for_diagnosis(resume)
+    requirements=validate_requirements(requirements)
     selected=set(RUNNERS) if enabled_sections is None else set(enabled_sections)
+    if not selected or selected-set(RUNNERS):
+        raise ValueError("请至少开启一个有效诊断模块")
     sections={}
     for key,runner in RUNNERS.items():
         if key not in selected:
             sections[key]={"status":"disabled","conclusion":"已按用户选择关闭该维度"}
-            continue
-        try:
-            sections[key]=runner(resume,target,today)
-        except Exception:
-            # Do not leak personal input or system exceptions into report.
-            sections[key]={"status":"error","conclusion":"此维度未能生成，请检查输入后重试"}
-    verification=sections.get("verification",{})
+        elif should_cancel and should_cancel():
+            sections[key]={"status":"cancelled","conclusion":"已取消，未继续执行此模块"}
+        else:
+            try:
+                result=(runner(resume,target,today,requirements) if key=="match" else runner(resume,target,today))
+                _validate_section(key,result,resume)
+                result.setdefault("summary",result.get("conclusion",result.get("summary","已完成证据核对")))
+                result.setdefault("limitations",[result["caveat"]] if result.get("caveat") else [])
+                result.setdefault("version_info",{"rules_version":load_rules()["version"],"as_of":today})
+                sections[key]=result
+            except Exception:
+                sections[key]={"status":"error","conclusion":"此维度未能生成有效证据结果，请检查输入后重试"}
+        if on_section:
+            on_section(key,sections[key])
+    return rebuild_report(resume,target,sections,today,requirements)
+
+
+def rebuild_report(resume: CandidateResume, target: Target, sections: dict, as_of: str, requirements=None) -> dict:
+    """Project the accepted frozen module versions without rerunning siblings."""
+    date.fromisoformat(as_of)
+    requirements=validate_requirements(requirements)
+    rules=load_rules()
+    dimensions={key:sections.get(key,{"status":"pending","conclusion":"等待生成"}) for key in RUNNERS}
+    completed=[key for key,item in dimensions.items() if item.get("status")=="ok"]
+    failed=[key for key,item in dimensions.items() if item.get("status")=="error"]
+    disabled=[key for key,item in dimensions.items() if item.get("status")=="disabled"]
+    cancelled=[key for key,item in dimensions.items() if item.get("status")=="cancelled"]
+    pending=[key for key in dimensions if key not in completed+failed+disabled+cancelled]
+    active=[key for key in dimensions if key not in disabled]
+    report_status=("complete" if completed and len(completed)==len(active) else
+                   "partial" if completed or pending else "cancelled" if cancelled and not failed else "failed")
+    scope={"status":report_status,"enabled":active,"completed":completed,"failed":failed,
+           "disabled":disabled,"cancelled":cancelled,"pending":pending,
+           "can_generate_suggestions":bool(completed)}
+    valid={key:item for key,item in dimensions.items() if key in completed}
+    verification=valid.get("verification",{})
     questions=verification.get("questions",[])
-    # Suggestions are independent of one section's failure.
-    suggestions=_advice(resume,target,sections)
+    suggestions=_advice(resume,target,valid) if completed else []
+    uncovered=[key for key in dimensions if key not in completed]
+    for item in suggestions:
+        item["uncovered_modules"]=uncovered
+        item["report_scope"]=report_status
     source=resume.model_dump(exclude={"source_text"})
+    snapshot={"resume":source,"target":target.model_dump(),"as_of":as_of,
+              "requirements":[item.model_dump() for item in requirements] if requirements is not None else None,
+              "enabled_sections":active,"rules_version":rules["version"]}
     return {
         "meta":{
             "version":"paperpro-diagnosis-v1",
             "rules_version":rules["version"],
             "rules_status":rules["status"],
             "generated_at":datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "as_of":today,
+            "as_of":as_of,
             "source_sha256":resume.source_sha256,
             "reviewed_draft_sha256":sha256(json.dumps(source,sort_keys=True,ensure_ascii=False).encode()).hexdigest(),
+            "input_snapshot_sha256":sha256(json.dumps(snapshot,sort_keys=True,ensure_ascii=False).encode()).hexdigest(),
             "score_is_hiring_probability":False,
             "disclaimer":"输出供候选人自查，不是实际企业录用概率；缺少真实 HR 标注数据，预测效度未验证。",
         },
         "target":target.model_dump(),
-        "dimensions":sections,
+        "dimensions":dimensions,
+        "report_status":report_status,
+        "scope":scope,
+        "can_generate_suggestions":bool(completed),
+        "requirements":[item.model_dump() for item in requirements] if requirements is not None else None,
         "suggestions":suggestions,
         "interview_questions":questions,
     }

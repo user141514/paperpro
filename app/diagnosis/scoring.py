@@ -11,7 +11,7 @@ from pathlib import Path
 import random
 import re
 
-from .schema import CandidateResume, Target
+from .schema import CandidateResume, Target, validate_requirements
 
 RULES_PATH = Path(__file__).with_name("rules.json")
 ALL_SECTIONS = ("match", "experience", "potential", "motivation", "verification")
@@ -269,11 +269,18 @@ def calculate_timeline(resume: CandidateResume, *, as_of: str) -> dict:
     return {
         "status":"ok", "stability_score":score,
         "dated_entries":dated,"unknown_date_entries":unparseable,
-        "months_total":months_total, "months_recorded_sum":months_recorded_sum,
+        "months_total":months_total if dated and not unparseable else None,
+        "known_months_total":months_total,
+        "months_recorded_sum":months_recorded_sum if dated and not unparseable else None,
+        "known_months_recorded_sum":months_recorded_sum,
+        "total_status":"unknown" if unparseable or not dated else "known",
         "timeline":nodes, "gaps":gaps,
         "overlaps":overlaps,"issues":issues,
-        "summary": ("全部工作经历缺少可核验的年月信息，稳定性未知"
-                    if dated==0 else f"可核对工作记录 {dated} 段，按自然月去重共 {months_total} 个月；时间空档 {len(gaps)} 处。"),
+        "summary": ("缺少可核验的工作年月，总年限无法计算，稳定性未知"
+                    if dated==0 else
+                    f"有 {unparseable} 段日期待补充，总年限无法计算；已知 {dated} 段按自然月去重 {months_total} 个月。"
+                    if unparseable else
+                    f"可核对工作记录 {dated} 段，按自然月去重共 {months_total} 个月；时间空档 {len(gaps)} 处。"),
     }
 
 
@@ -316,7 +323,10 @@ def score_match(
     resume: CandidateResume, target: Target, *,
     as_of: str = "2026-10-19",
     weight_override: dict[str, float] | None = None,
+    requirements=None,
 ) -> dict:
+    if requirements is not None:
+        return _score_confirmed_requirements(resume, target, requirements, as_of)
     rules = load_rules()
     family, profile = _profile(target.role, rules)
     refs = _refs(resume)
@@ -379,7 +389,7 @@ def score_match(
                 coefficient = round(min(1.0, months / month_requirement), 4)
                 actual_refs=tenure_refs
                 reason=(
-                    f"已记录任职 {timeline['months_total']} 月，其中可见岗位职能证据"
+                    (f"已记录任职 {timeline['months_total']} 月，" if timeline['months_total'] is not None else "部分任职日期缺失，总年限无法计算；") + "其中可见岗位职能证据"
                     f"且起止年月明确的相关任职 {months} 月（重叠去重）；"
                     f"评估参考阈值 {month_requirement} 月。"
                 )
@@ -444,6 +454,8 @@ def score_match(
         row["effective_weight"]=(round(row["base_weight"]/weight_sum,6)
                                  if row["_active"] and weight_sum else 0.0)
         del row["_active"]
+        row["factor_id"] = row["id"]
+        row["contribution"] = round(row["coefficient"] * row["effective_weight"] * 100, 6)
     if weight_sum:
         # Compute from unrounded base weights, not display-rounded projections.
         points=sum(row["coefficient"]*row["base_weight"] for row in rows if row["effective_weight"])
@@ -459,6 +471,8 @@ def score_match(
              if not jd else "岗位描述来自用户输入；该分数并非经真实录用结果校准的录取概率。")
     return {
         "status":"ok","score":score,"grade":grade,"requirements":rows,
+        "raw_score":100*points/weight_sum if weight_sum else 0.0,
+        "display_score":score,
         "job_family":family,"confidence":confidence,
         "calibration_warning":warning,
         "conclusion":f"候选人在当前岗位要求中的书面证据覆盖度为 {grade}（{score}/100）。",
@@ -472,6 +486,110 @@ def score_match(
         ),
         "rule_version":rules["version"],
     }
+
+
+def _credential_in_progress(text: str) -> bool:
+    return bool(re.search(
+        r"在读|攻读|就读|肄业|未毕业|备考|报考|待考|计划|预计|预期|"
+        r"尚未|未参加|未取得|未获得|未持有|未通过|培训中|preparing|in progress|expected",
+        text, re.I,
+    ))
+
+
+def _minimum_degree(description, levels):
+    clauses=[part for part in re.split(r"[，,；;。\n]",description) if part.strip()]
+    mandatory=[part for part in clauses if not re.search(r"优先|优选|preferred",part,re.I)]
+    text="；".join(mandatory or clauses)
+    return min((level for term,level in levels.items() if _contains(text,term)),default=0)
+
+
+def _score_confirmed_requirements(resume, target, requirements, as_of):
+    items = validate_requirements(requirements)
+    rules = load_rules()
+    rows = []
+    for item in items:
+        # Reuse the existing factor coefficient logic with THIS confirmed
+        # description, rather than treating the original JD as authority.
+        scoped = Target(role=item.description if item.factor_id == "function" else target.role,
+                        company=target.company, job_description=item.description)
+        base = score_match(resume, scoped, as_of=as_of)
+        factor = next((row for row in base["requirements"] if row["id"] == item.factor_id), None)
+        refs = _refs(resume)
+        evidence = factor["evidence_refs"] if factor else []
+        coefficient = factor["coefficient"] if factor else 0.0
+        reason = factor["reason"] if factor else "仅核对要求中明确列出的证书。"
+        status = factor["status"] if factor else "简历未体现"
+        if item.factor_id in {"skills", "projects", "certificates"}:
+            terms = [term for term in rules["factors"][0]["keywords"] if _contains(item.description, term)]
+            if not terms:
+                terms = re.findall(r"[A-Za-z][A-Za-z0-9+#./-]*", item.description)
+                terms = [term for term in terms if term.lower() not in {"must","required","and","or","skill","skills","certificate","certification","have","hold","a","an","the","with","of","in","to"}]
+            if not terms and item.factor_id == "certificates":
+                terms = [re.sub(r"必须|持有|取得|具备|获得|相关|证书要求|资格证|证书|认证|[，,。；;：:\s]", "", item.description)]
+            if terms and all(terms):
+                pool = refs if item.factor_id == "skills" else [ref for ref in refs if ref["path"].startswith(("projects.", "experience."))] if item.factor_id == "projects" else [ref for ref in refs if ref["path"].startswith("certificates.")]
+                in_progress=[]
+                if item.factor_id == "certificates":
+                    in_progress=[ref for ref in pool if _credential_in_progress(ref["original"]) and any(_contains(ref["original"],term) for term in terms)]
+                    pool=[ref for ref in pool if ref not in in_progress]
+                strengths = [_skill_strength(pool, term) for term in terms]
+                coefficient = sum(strength for strength,_ in strengths) / len(terms)
+                if item.factor_id == "certificates":
+                    coefficient = sum(bool(evidence) for _,evidence in strengths) / len(terms)
+                evidence = list({ref["path"]:ref for _,found in strengths for ref in found}.values())[:5]
+                status = "已体现" if coefficient >= .999 else "部分具备" if coefficient else "简历未体现"
+                reason = "按已确认要求中的明确关键词核对真实文字证据；缺少证据不等于不具备。"
+                negative = [ref for ref in pool if any(_contains(ref["original"], term) and not _positive_skill(ref, term) for term in terms)]
+                if not coefficient and negative:
+                    status, evidence = "明确不满足", negative[:5]
+                    reason = "已确认要求与简历中明确的否定事实有直接差距；请核实原文或要求。"
+                elif not coefficient and in_progress:
+                    status, evidence = "简历未体现", in_progress[:5]
+                    reason = "原文仅说明备考、培训或待取得状态，不能作为已经持有认证的证据。"
+            else:
+                status, coefficient = "无法判断", 0.0
+                evidence = []
+                reason = "该要求没有当前规则可可靠核对的明确技能／项目／证书，需澄清要求或人工核对。"
+        if item.factor_id == "education":
+            levels={"博士":5,"phd":5,"硕士":4,"master":4,"本科":3,"学士":3,"bachelor":3,"大专":2,"专科":2,"高中":1}
+            demanded=_minimum_degree(item.description,levels)
+            education_refs=[ref for ref in refs if ref["path"].startswith("education.")]
+            pending=[ref for ref in education_refs if _credential_in_progress(ref["original"])]
+            observed=[(level,ref) for ref in education_refs if ref not in pending for term,level in levels.items() if _positive_skill(ref,term)]
+            if demanded and observed:
+                level,ref=max(observed,key=lambda pair:pair[0])
+                evidence=[ref]
+                coefficient=1.0 if level>=demanded else 0.0
+                status="已体现" if coefficient else "明确不满足"
+                reason="将已取得的学历层次与已确认最低层次比较；优先项不提高最低学历门槛。"
+            elif demanded and pending:
+                coefficient, status, evidence=0.0,"简历未体现",pending[:5]
+                reason="原文仅说明在读、攻读或预计毕业，尚不能作为已经取得该学历的证据。"
+        if item.factor_id == "experience" and calculate_timeline(resume, as_of=as_of)["total_status"] == "unknown":
+            status = "无法判断"
+            reason = "部分或全部工作日期缺失／异常，不能发布确定的相关年限或年限匹配分数。"
+        if factor and factor["status"] == "岗位未要求" and item.factor_id not in {"skills", "projects", "certificates"}:
+            status, coefficient = "无法判断", 0.0
+            reason = "已确认的要求尚无可计算口径，请明确描述或关闭该评分项。"
+        if not item.enabled:
+            status = "已关闭"
+        weight = item.weight / 100 if item.enabled else 0
+        rows.append({**item.model_dump(), "coefficient":round(coefficient, 6),
+                     "effective_weight":weight, "base_weight":item.weight/100,
+                     "status":status, "reason":reason, "evidence_refs":evidence,
+                     "contribution":round(coefficient * weight * 100, 6), "weight_unit":"percent"})
+    unscorable = any(row["status"] == "无法判断" for row in rows if row["enabled"])
+    raw = sum(row["coefficient"] * row["effective_weight"] * 100 for row in rows)
+    display = None if unscorable else round(raw)
+    grade = "无法判断" if unscorable else "高" if display >= rules["thresholds"]["high"] else "中" if display >= rules["thresholds"]["medium"] else "低"
+    return {"status":"ok", "score":display, "raw_score":None if unscorable else raw,
+            "display_score":display, "grade":grade, "requirements":rows,
+            "job_family":_profile(target.role, rules)[0], "rule_version":rules["version"],
+            "job_fit_applicable":not unscorable, "score_kind":"已确认岗位要求的书面证据覆盖度",
+            "confidence":"低" if unscorable else "中", "hr_interpretation":"按已确认能力项及权重逐项核对；不作为录用概率或淘汰决定。",
+            "calibration_warning":"要求及权重由用户确认；通用模型假设不是企业官方招聘条件。",
+            "conclusion":"部分要求缺少可计算口径，暂不发布总分。" if unscorable else f"已确认要求的书面证据覆盖度为 {display}/100。",
+            "limitations":[row["label"]+"："+row["reason"] for row in rows if row["status"] == "无法判断"]}
 
 
 def weight_sensitivity(

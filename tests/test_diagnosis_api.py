@@ -29,8 +29,10 @@ def _draft():
 
 
 def _report():
+    resume=_draft()["resume"]
+    resume["summary"]="希望参与后端开发工程师岗位。"
     return client.post("/api/diagnosis/report",json={
-        "resume":_draft()["resume"],
+        "resume":resume,
         "target":{"role":"后端开发工程师","company":"示例公司",
                   "job_description":"熟悉 Python SQL Docker Git，2年开发经验"},
         "as_of":"2026-10-19",
@@ -83,7 +85,8 @@ def test_full_report_trace_and_evidence_and_all_five_sections():
     assert b["meta"]["score_is_hiring_probability"] is False
     assert len(b["dimensions"]["match"]["requirements"])>=6
     assert all(v["status"]=="ok" for v in b["dimensions"].values())
-    assert len(b["suggestions"])>=8
+    assert b["suggestions"]
+    assert all(item["source_modules"] for item in b["suggestions"])
     for issue in b["dimensions"]["verification"]["issues"]:
         assert issue["location"] and issue["original"]
 
@@ -106,14 +109,14 @@ def test_report_disable_dimension_and_rerun_score_stability():
 def test_selected_only_text_todo_and_interview_export():
     result=_report().json()
     suggestions=result["suggestions"]
-    want=[suggestions[1]["id"], suggestions[-1]["id"]]
+    want=[suggestions[0]["id"], suggestions[-1]["id"]]
     res=client.post("/api/diagnosis/export",json={
         "report":result,"selected_ids":want,"kind":"todo","format":"txt",
     })
     assert res.status_code==200,res.text
     assert res.headers["x-selected-count"]=="2"
     content=res.content.decode("utf-8-sig")
-    assert suggestions[1]["title"] in content
+    assert suggestions[0]["title"] in content
     assert suggestions[-1]["title"] in content
     assert all(x["title"] not in content for x in suggestions if x["id"] not in want)
     issue_questions=result["interview_questions"]

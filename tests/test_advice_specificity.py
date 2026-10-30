@@ -38,12 +38,9 @@ def test_complete_resume_has_no_unfounded_gaps_or_high_priority():
         as_of="2026-10-19",
     )
     by_id={x["id"]:x for x in report["suggestions"]}
-    assert len(by_id)>=8
-    assert by_id["advice-06"]["priority"]=="低"
-    assert by_id["advice-06"]["assessment"]=="可选深化"
-    assert "缺少统计口径" not in by_id["advice-06"]["problem"]
-    assert by_id["advice-07"]["assessment"]=="可选深化"
-    assert "空档可能尚未注明" not in by_id["advice-07"]["problem"]
+    assert len(by_id)<8  # Do not pad a strong resume to the old demo count.
+    assert "advice-06" not in by_id
+    assert "advice-07" not in by_id
     assert not [a for a in report["suggestions"] if a["priority"]=="高"]
     for advice in report["suggestions"]:
         assert all(advice[k] for k in ("location","original","problem","action","example"))
@@ -52,7 +49,7 @@ def test_complete_resume_has_no_unfounded_gaps_or_high_priority():
 
 def test_missing_core_job_qualifications_are_specific_and_high_priority():
     report=run_diagnosis(
-        CandidateResume(name="合成候选人"),
+        CandidateResume(name="合成候选人",summary="正在转向后端岗位，尚未填写相关职责与技能。"),
         Target(role="后端开发工程师",
                job_description="熟悉 Python SQL Docker Git，需要2年后端开发经验"),
         as_of="2026-10-19",
@@ -76,11 +73,11 @@ def test_selected_optional_suggestion_exports_as_opportunity_not_allegation():
                            job_description="熟悉 Python SQL Docker Git，2年后端开发经验"),
         as_of="2026-10-19",
     )
-    candidate=next(x for x in report["suggestions"] if x["id"]=="advice-06")
+    candidate=next(x for x in report["suggestions"] if x["id"]=="advice-03")
     assert candidate["assessment"]=="可选深化"
     result=TestClient(app).post("/api/diagnosis/export",json={
         "report":report,
-        "selected_ids":["advice-06"],
+        "selected_ids":[candidate["id"]],
         "kind":"todo","format":"txt",
     })
     assert result.status_code==200,result.text
@@ -99,5 +96,4 @@ def test_dated_resume_without_metric_should_not_fake_a_missing_baseline():
         resume, Target(role="后端开发工程师"), as_of="2026-10-19",
     )
     by_id={x["id"]:x for x in report["suggestions"]}
-    assert by_id["advice-06"]["assessment"]=="可选深化"
-    assert "缺少统计口径" not in by_id["advice-06"]["problem"]
+    assert "advice-06" not in by_id

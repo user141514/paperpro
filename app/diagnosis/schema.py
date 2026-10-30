@@ -1,5 +1,6 @@
 """Fixed user-editable candidate schema. Existing classic Resume is unchanged."""
 from __future__ import annotations
+import math
 from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 from app.models import Entry, Education, Resume
@@ -86,15 +87,52 @@ class Target(BaseModel):
 
     @model_validator(mode="after")
     def at_least_one(self):
-        if not self.role.strip() and not self.company.strip():
-            raise ValueError("请至少填写目标职位或目标公司")
+        if not self.role.strip():
+            raise ValueError("请填写目标职位；目标公司与 JD 可选")
         return self
+
+
+class JobRequirement(BaseModel):
+    """One user-visible, confirmed scoring criterion; weight is percent."""
+
+    id: str = Field(min_length=1, max_length=100)
+    factor_id: Literal["skills", "function", "experience", "projects", "education", "industry", "leadership", "certificates"]
+    label: str = Field(min_length=1, max_length=140)
+    description: str = Field(min_length=1, max_length=2000)
+    weight: float = Field(ge=0, le=100, allow_inf_nan=False)
+    enabled: bool = True
+    hard_gate: bool = False
+    source: str = Field(min_length=1, max_length=80)
+
+    @field_validator("id", "label", "description", "source")
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError("能力项名称、描述和来源不可为空")
+        return value.strip()
+
+
+def validate_requirements(value):
+    if value is None:
+        return None
+    items = [item if isinstance(item, JobRequirement) else JobRequirement.model_validate(item) for item in value]
+    if not items or len(items) > 40 or len({item.id for item in items}) != len(items):
+        raise ValueError("请提供 1–40 条标识唯一的评分要求")
+    active = [item for item in items if item.enabled]
+    if not active or not math.isclose(sum(item.weight for item in active), 100, abs_tol=1e-6):
+        raise ValueError("纳入评分的能力项权重合计必须为 100%")
+    return items
+
+
+class RequirementsRequest(BaseModel):
+    target: Target
 
 
 class DiagnosisRequest(BaseModel):
     resume: CandidateResume
     target: Target
     enabled_sections: list[str] | None = None
+    requirements: list[JobRequirement] | None = Field(default=None, max_length=40)
     as_of: str | None = None
     use_ai: bool = False
     ai_consent: bool = False
@@ -105,11 +143,17 @@ class DiagnosisRequest(BaseModel):
     @classmethod
     def validate_enabled(cls, value):
         if value is not None and (
+            not value or
             len(set(value)) != len(value) or
             any(item not in {"match", "experience", "potential", "motivation", "verification"} for item in value)
         ):
             raise ValueError("未知或重复的诊断维度")
         return value
+
+    @field_validator("requirements")
+    @classmethod
+    def confirmed_requirements(cls, value):
+        return validate_requirements(value)
 
 
 class PasteRequest(BaseModel):
