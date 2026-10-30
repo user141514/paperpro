@@ -102,6 +102,7 @@
 .diag-evidence>div {margin-bottom:7px;}
 .diag-evidence code{display:block;color:#6c86b7;font-size:10px;word-break:break-all;}
 .diag-evidence span{display:block;color:#4d6281;overflow-wrap:anywhere;}
+.diag-evidence-link{display:block;padding:0;border:0;background:transparent;font:inherit;font-size:10px;color:#4b70bb;text-align:left;cursor:pointer;text-decoration:underline;overflow-wrap:anywhere}
 .diag-mini-stat {min-width:132px;flex:1;display:flex;flex-direction:column;align-items:flex-start;padding:18px 16px;border:1px solid #e8edf6;background:linear-gradient(110deg,#f9fbff,#fff);border-radius:10px;}
 .diag-mini-stat strong{font-weight:800;font-size:27px;color:#395daf;line-height:1.3}
 .diag-mini-stat small{color:#8594a9;font-size:11px;margin-top:4px}
@@ -120,6 +121,23 @@
 .diag-advice-body p{overflow-wrap:anywhere}
 .diag-example{background:#f5f8ff;border-left:3px solid #7a94d8;border-radius:4px;padding:10px 13px;margin-top:2px;font-size:12px;color:#405984;line-height:1.7}
 .diag-example strong{font-size:11px;color:#7184a4}
+.diag-task-toolbar{border:1px solid #dfe7f4;background:#f8faff}
+.diag-task-list>div{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #edf0f6}
+.diag-task-list>div:last-child{border-bottom:0}
+.diag-history-list>div,.diag-history-run,.diag-field-change,.diag-quality-warning,.diag-conflict-row{padding:12px 0;border-bottom:1px solid #edf0f6;overflow-wrap:anywhere}
+.diag-quality-warning{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.diag-source-paragraphs{max-height:280px;overflow:auto;border-radius:8px;background:#f7f9fe;padding:12px;line-height:1.8;overflow-wrap:anywhere;white-space:pre-wrap}
+.diag-source-paragraphs>button{display:block;width:100%;border:0;border-radius:4px;background:transparent;padding:3px 4px;color:#4a5c72;text-align:left;font:inherit;cursor:pointer;white-space:pre-wrap;overflow-wrap:anywhere}
+.diag-source-paragraphs>button:hover,.diag-source-paragraphs>button.is-focused{background:#fff0bd;color:#503b04}
+.diag-source-paragraphs>button:focus-visible{outline:2px solid #5479ce}
+.diag-requirements-editor{display:grid;gap:12px}
+.diag-filter{display:flex;gap:8px;align-items:center;font-size:12px;color:#657998}
+.diag-filter select{max-width:190px;border:1px solid #dbe3ef;background:#fff;border-radius:6px;padding:7px;color:#334967;font:inherit}
+.diag-before-after{font-size:12px;line-height:1.8;padding:8px 0;color:#5b6f8d}
+.diag-before-after summary{cursor:pointer;font-weight:600}
+.diag-advice-body{padding-left:0}
+.diag-history-detail{min-width:0}
+.diag-panel mark{background:#fff0bd;overflow-wrap:anywhere}
 .diag-footer{border-top:1px solid #e4eaf3;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:38px;padding:19px 5px 0;color:#9aa9bb;font-size:11px}
 @media(max-width:1090px){
  .diag-root{grid-template-columns:195px minmax(0,1fr)}
@@ -155,6 +173,8 @@
  .diag-signal-grid{grid-template-columns:1fr}
  .diag-timeline{flex-direction:column;gap:4px}
  .diag-footer{flex-direction:column}
+ .diag-task-list>div{align-items:flex-start;flex-direction:column}
+ .diag-quality-warning{align-items:flex-start}
  .diag-mini-stat{min-width:80px;padding:13px}
 }
 @media(max-width:420px){
