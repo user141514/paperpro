@@ -131,6 +131,9 @@
 .diag-source-paragraphs>button:hover,.diag-source-paragraphs>button.is-focused{background:#fff0bd;color:#503b04}
 .diag-source-paragraphs>button:focus-visible{outline:2px solid #5479ce}
 .diag-requirements-editor{display:grid;gap:12px}
+.diag-recompute-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.diag-recompute-grid>div{border:1px solid #e4eaf4;background:#f8faff;padding:12px;border-radius:8px;overflow-wrap:anywhere;line-height:1.7}
+.diag-module-origin{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;border-top:1px solid #edf0f6;margin-top:16px;padding-top:10px}
 .diag-filter{display:flex;gap:8px;align-items:center;font-size:12px;color:#657998}
 .diag-filter select{max-width:190px;border:1px solid #dbe3ef;background:#fff;border-radius:6px;padding:7px;color:#334967;font:inherit}
 .diag-before-after{font-size:12px;line-height:1.8;padding:8px 0;color:#5b6f8d}
@@ -171,6 +174,7 @@
  .diag-score-ring{width:100px;height:100px}
  .diag-score-ring span{font-size:30px}
  .diag-signal-grid{grid-template-columns:1fr}
+ .diag-recompute-grid{grid-template-columns:1fr}
  .diag-timeline{flex-direction:column;gap:4px}
  .diag-footer{flex-direction:column}
  .diag-task-list>div{align-items:flex-start;flex-direction:column}

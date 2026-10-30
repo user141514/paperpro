@@ -12,7 +12,7 @@ import {
   IconShieldCheck, IconSparkles, IconTargetArrow, IconTrash,
 } from '@tabler/icons-react';
 import { createClassicHandoff, saveClassicHandoff } from './resumeHandoff.js';
-import { downloadTaskExport, draftDifferences, useCandidateWorkflow, workflowRequest } from './candidateWorkflow.js';
+import { downloadTaskExport, draftDifferences, moduleRecomputePresentation, useCandidateWorkflow, workflowRequest } from './candidateWorkflow.js';
 
 const STEPS = ['上传简历', '校对信息', '目标职位', '诊断报告', '优化清单'];
 const SECTIONS = [
@@ -63,7 +63,7 @@ function lines(text) {
 }
 function joinLines(values) { return (values || []).join('\n'); }
 function fieldLabel(path) {
-  const labels={...KEYS,experience:'工作经历',projects:'项目经历',education:'教育背景',company:'公司',role:'职位',start_date:'开始年月',end_date:'结束年月',heading:'标题',bullets:'职责与成果',details:'补充内容',skills:'技能',certificates:'证书',additional:'其他内容'};
+  const labels={...KEYS,experience:'工作经历',projects:'项目经历',education:'教育背景',company:'公司',role:'职位',start_date:'开始年月',end_date:'结束年月',heading:'标题',bullets:'职责与成果',details:'补充内容',skills:'技能',certificates:'证书',additional:'其他内容',target:'目标',requirements:'评分依据',weight:'权重',description:'要求说明',enabled:'是否纳入',hard_gate:'硬门槛',as_of:'统计时点',enabled_sections:'诊断范围',job_description:'岗位 JD'};
   return String(path||'').split('.').map(part=>/^\d+$/.test(part)?'第 '+(Number(part)+1)+' 项':labels[part]||part).join(' · ');
 }
 function displayValue(value) {
@@ -86,6 +86,23 @@ function Panel({ title, children, extra, testId }) {
     </Group>
     {children}
   </Paper>;
+}
+function RecomputeSummary({ data, actual=false, onViewReport, onViewSource }) {
+  if(!data)return null;
+  const names=values=>(values||[]).map(key=>SECTIONS.find(([id])=>id===key)?.[1]||key).join('、')||'无';
+  return <Panel title={actual?'本次检查的计算与复用':'本次变化与重算范围'} testId={actual?'candidate-recompute-result':'candidate-recompute-plan'}>
+    {data.changed_fields?.length>0&&<Text size="sm" mb="md">变化字段：{data.changed_fields.map(path=>fieldLabel(path.replace(/^resume\./,''))).join('；')}</Text>}
+    <div className="diag-recompute-grid">
+      <div><Text fw={650} size="sm">{actual?'本次已计算':'需重新计算'}</Text><Text size="sm" data-testid="candidate-recompute-recomputed">{names(data.recomputed)}</Text></div>
+      <div><Text fw={650} size="sm">{actual?'已复用结果':'可复用结果'}</Text><Text size="sm" data-testid="candidate-recompute-reused">{names(data.reused)}</Text></div>
+      <div><Text fw={650} size="sm">本次关闭</Text><Text size="sm">{names(data.disabled)}</Text></div>
+    </div>
+    <Text size="xs" c="dimmed" mt="md">{actual?'复用保留原来的计算时点；本次只重新核对它是否仍适用于当前输入。':'未受影响的模块保留可读。按新快照完成检查后，再更新建议、待办依据和可导出的汇总报告。'}</Text>
+    <Group gap="xs" mt="sm">
+      {onViewReport&&<Button size="xs" variant="light" onClick={onViewReport} data-testid="candidate-recompute-view-report">查看保留的模块结果</Button>}
+      {actual&&data.source_run_id&&onViewSource&&<Button size="xs" variant="subtle" onClick={()=>onViewSource(data.source_run_id)}>查看上次分析快照</Button>}
+    </Group>
+  </Panel>;
 }
 function Evidence({ refs, onLocate }) {
   if (!refs?.length) return <Text size="xs" c="dimmed">简历中未找到直接文字证据；不代表实际能力缺失。</Text>;
@@ -309,6 +326,8 @@ export default function CandidateDiagnosisApp() {
   const fields=task?.field_records||[];
   const focusedRecord=fields.find(field=>field.path===focusedField)||fields.find(field=>field.path.startsWith(focusedField+'.'));
   const criticalFields=quality.critical_fields||[];
+  const recomputePlan=run?.recompute;
+  const executedRecompute=report?.meta?.recompute;
 
   async function refreshTasks() {
     try { const data=await workflowRequest('/api/diagnosis/tasks');setTasks(Array.isArray(data)?data:data.tasks||[]);setTasksReady(true); }
@@ -413,7 +432,7 @@ export default function CandidateDiagnosisApp() {
     invalidate();
   }
   function modifyTarget(field,value){
-    updateDraft(previous=>({...previous,target:{...previous.target,[field]:value},requirements:[],requirements_confirmed:false}));invalidate();
+    updateDraft(previous=>({...previous,target:{...previous.target,[field]:value},requirements:field==='company'?previous.requirements:[],requirements_confirmed:false}));invalidate();
   }
   function changePaste(value){
     // Typing a new source invalidates a pending parse of the earlier text.
@@ -605,12 +624,15 @@ export default function CandidateDiagnosisApp() {
       setNavNotice('任务、原始资料与历史记录已删除，不能继续访问或导出。');
     }catch(e){setError(e.message);}finally{setBusy('');}
   }
-  async function showHistory() {
+  async function showHistory(sourceRunId) {
     if(!task)return;
     try {
       await flushDraft();
       const value=await workflowRequest('/api/diagnosis/tasks/'+encodeURIComponent(task.id)+'/history');
-      setHistory(value);setHistoryView(null);
+      setHistory(value);
+      const source=typeof sourceRunId==='string'?(value.runs||[]).find(item=>item.id===sourceRunId):null;
+      setHistoryView(source?{kind:'run',value:source}:null);
+      if(typeof sourceRunId==='string'&&!source)setNavNotice('来源记录可在历史版本中核对；当前未找到该报告的可读详情。');
     }catch(e){setError(e.message);}
   }
   async function inspectConflict() {
@@ -725,6 +747,7 @@ export default function CandidateDiagnosisApp() {
           </Group>
           {saveStatus==='error'&&<Text size="xs" mt="xs">你的编辑仍保留在页面。请重试；若有版本冲突，请先复制需要保留的文字，再重新打开任务核对差异。</Text>}
         </Paper>}
+        {run?.stale&&recomputePlan&&<RecomputeSummary data={recomputePlan} onViewReport={report&&step!==3?()=>navigate(3):undefined}/>}
         {conflictVersion&&<Panel title="保存冲突：核对版本差异" extra={<Button size="xs" variant="subtle" onClick={()=>setConflictVersion(null)}>暂不处理</Button>}>
           <Text size="sm" mb="md">本页编辑保留在左侧；服务器最新版本为 {conflictVersion.revision}。请核对后决定是否用本页内容创建新版本。历史记录不会被物理覆盖。</Text>
           {draftDifferences(draft,conflictVersion.state).map(item=><div className="diag-conflict-row" key={item.path}>
@@ -1012,7 +1035,7 @@ export default function CandidateDiagnosisApp() {
             <Button variant="subtle" leftSection={<IconArrowLeft size={16}/>} onClick={()=>navigate(1)}>返回修改简历</Button>
             <Button onClick={()=>generate()} disabled={!readyRun||!!busy||(aiEnabled&&!aiConsent)}
               rightSection={<IconSparkles size={17}/>} data-testid="candidate-generate">
-              生成五维诊断报告
+              {report?'重新检查受影响模块':'生成五维诊断报告'}
             </Button>
           </Group>
         </>}
@@ -1021,6 +1044,7 @@ export default function CandidateDiagnosisApp() {
           <StepTitle code="04" title="HR 视角诊断报告">依据校对后的文本分析。每个结论都保留依据位置；不掌握的资料会明确标为“未体现”，不会被视为事实证明。</StepTitle>
           <div className="diag-report-meta"><div><strong>岗位：{report.target?.role||'未提供'} </strong> / 公司：{report.target?.company||'未提供'}</div>
             <div>生成时间 {report.meta.generated_at} · 规则版本 {report.meta.rules_version}</div></div>
+          {!run.stale&&executedRecompute&&<RecomputeSummary data={executedRecompute} actual onViewSource={showHistory}/>}
           <Alert mb="lg" color={stale?'orange':validModules.length===enabled.length?'teal':'orange'} variant="light" data-testid="candidate-report-scope"
             title={lockedRun?'本次处理只读保留':stale?'待重新确认的历史结果':!validModules.length?'诊断未完成 · 暂无有效模块':validModules.length===enabled.length?'完整诊断报告':'部分诊断报告'}>
             已完成 {validModules.length} 项 · 已关闭 {SECTIONS.filter(([key])=>report.dimensions?.[key]?.status==='disabled').length} 项 ·
@@ -1035,13 +1059,21 @@ export default function CandidateDiagnosisApp() {
           {SECTIONS.map(([key,label],i)=>{
             const data=report.dimensions?.[key];
             const Component=REPORT_COMPONENTS[key];
+            const presentation=moduleRecomputePresentation(key,{status:data?.status,stale:!!run.stale,plan:recomputePlan,actual:executedRecompute,affected:run.affected_modules||[]});
+            const provenance=report.meta.module_provenance?.[key];
+            const sourceId=provenance?.origin_run_id||provenance?.source_run_id||executedRecompute?.source_run_id;
+            const reusable=run.stale&&recomputePlan?.reused?.includes(key);
             return <Panel key={key} testId={'dimension-'+key}
               title={<Group gap="xs" align="center"><span className="diag-section-index">{String(i+1).padStart(2,'0')}</span>{label}</Group>}
-              extra={<Group gap="xs"><Status text={data?.status==='ok'?'已生成':data?.status==='disabled'?'已关闭':data?.status==='cancelled'?'已取消':'生成失败'}
-                color={data?.status==='ok'?'teal':'gray'}/>
+              extra={<Group gap="xs"><Status text={presentation.text} color={presentation.color}/>
                 {!['ok','disabled'].includes(data?.status)&&<Button size="xs" variant="light" disabled={!!busy||stale} onClick={()=>generate(key)}>重试此模块</Button>}
               </Group>}>
-              {data?.status==='ok'?<><Component data={data} onLocate={stale?undefined:locateEvidence}/>{data.ai_commentary&&<Alert mt="lg" color="blue" variant="light" title="DeepSeek 辅助解读（仍需核实）">{data.ai_commentary}</Alert>}</>:<Text size="sm" c="dimmed">{data?.conclusion||'暂无结果'}</Text>}
+              {data?.status==='ok'?<><Component data={data} onLocate={!stale||(reusable&&saveStatus==='saved'&&!lockedRun)?locateEvidence:undefined}/>{data.ai_commentary&&<Alert mt="lg" color="blue" variant="light" title="DeepSeek 辅助解读（仍需核实）">{data.ai_commentary}</Alert>}</>:<Text size="sm" c="dimmed">{data?.conclusion||'暂无结果'}</Text>}
+              {provenance&&data?.status==='ok'&&<div className="diag-module-origin">
+                <Text size="xs" c="dimmed">{provenance.computed_as_of?'原计算时点：'+provenance.computed_as_of:''}
+                  {provenance.validated_as_of?' · 已核对时点：'+provenance.validated_as_of:''}</Text>
+                {sourceId&&((!run.stale&&sourceId!==run.id)||reusable)&&<Button size="xs" variant="subtle" onClick={()=>showHistory(sourceId)}>查看结果来源</Button>}
+              </div>}
             </Panel>;
           })}
           <Panel title="面试准备清单预览" extra={<Status text={questionList.length+' 条'} color="gray"/>}>

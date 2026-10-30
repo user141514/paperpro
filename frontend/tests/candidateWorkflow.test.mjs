@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDraftSaver, draftDifferences } from '../src/candidateWorkflow.js';
+import { createDraftSaver, draftDifferences, moduleRecomputePresentation } from '../src/candidateWorkflow.js';
 
 function deferred() {
   let resolve, reject;
@@ -104,4 +104,25 @@ test('an already-sent stale save retries only after a proven unchanged server re
   await running;
   assert.deepEqual(revisions,[4,5]);
   assert.equal(saver.task.state.target.role,'new');
+});
+
+test('a stale aggregate marks only affected modules for recomputation and preserves reusable results',()=>{
+  const plan={recomputed:['motivation','verification'],reused:['match','experience','potential'],disabled:[]};
+  assert.equal(moduleRecomputePresentation('experience',{status:'ok',stale:true,plan,affected:['motivation','verification']}).text,'可复用 · 保留结果');
+  assert.equal(moduleRecomputePresentation('motivation',{status:'ok',stale:true,plan,affected:['motivation','verification']}).text,'待重算');
+  assert.equal(moduleRecomputePresentation('experience',{status:'ok',stale:false,actual:plan}).text,'已复用');
+});
+
+test('module presentation uses executed reuse metadata, not a future plan or a fabricated calculation date',()=>{
+  const actual={recomputed:['match'],reused:['experience'],disabled:[],source_run_id:'old-run'};
+  assert.equal(moduleRecomputePresentation('match',{status:'ok',stale:false,actual}).text,'已重算');
+  assert.equal(moduleRecomputePresentation('match',{status:'ok',stale:false,actual:{...actual,source_run_id:null}}).text,'已生成');
+  assert.equal(moduleRecomputePresentation('experience',{status:'ok',stale:true,plan:{recomputed:[],reused:[],disabled:['experience']}}).text,'本次已关闭');
+  assert.equal(moduleRecomputePresentation('potential',{status:'error',stale:false,actual}).text,'生成失败');
+});
+
+test('a module scheduled because of an earlier failure is not mislabeled as changed input',()=>{
+  const plan={recomputed:['potential'],reused:['experience'],disabled:[]};
+  assert.equal(moduleRecomputePresentation('potential',{status:'error',stale:true,plan,affected:[]}).text,'生成失败');
+  assert.equal(moduleRecomputePresentation('potential',{status:'disabled',stale:true,plan,affected:[]}).text,'待生成');
 });

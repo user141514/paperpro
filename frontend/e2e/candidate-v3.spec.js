@@ -21,8 +21,10 @@ async function reviewedDemo(page) {
   await page.getByTestId('candidate-prepare-requirements').click();
   await expect(page.getByTestId('candidate-requirements')).toBeVisible();
   await page.getByTestId('candidate-requirements-confirmed').check();
+  const completed=page.waitForResponse(response=>/\/api\/diagnosis\/tasks\/[^/]+\/run$/.test(response.url())&&response.request().method()==='POST');
   await page.getByTestId('candidate-generate').click();
   await expect(page.getByTestId('dimension-match')).toBeVisible();
+  return (await (await completed).json()).current_run;
 }
 
 test('V3 adoption needs actual text, completion is independent, reload continues owned task', async ({ page }) => {
@@ -166,7 +168,7 @@ test('V3 partial module responses show scope and support an independent retry', 
   await expect(page.getByTestId('candidate-report-scope')).toContainText('部分诊断报告');
   await expect(page.getByTestId('dimension-potential')).toContainText('合成模块失败');
   await page.getByTestId('dimension-potential').getByRole('button',{name:'重试此模块',exact:true}).click();
-  await expect(page.getByTestId('dimension-potential')).toContainText('已生成');
+  await expect(page.getByTestId('dimension-potential')).toContainText(/已生成|已重算|已复用/);
   await expect(page.getByTestId('candidate-report-scope')).toContainText('完整诊断报告');
 });
 
@@ -307,5 +309,130 @@ test('V3 all-failed module contract blocks advice and export while keeping modul
   const retry=page.getByTestId('dimension-match').getByRole('button',{name:'重试此模块',exact:true});
   await expect(retry).toBeEnabled();
   await retry.click();
-  await expect(page.getByTestId('dimension-match')).toContainText('已生成');
+  await expect(page.getByTestId('dimension-match')).toContainText(/已生成|已重算|已复用/);
+});
+
+test('V3 minimal recompute: summary change keeps experience result and reuses its source',async({page})=>{
+  const previous=await reviewedDemo(page);
+  await page.getByRole('button',{name:'返回修改目标',exact:true}).click();
+  await page.getByRole('button',{name:'返回修改简历',exact:true}).click();
+  await page.getByRole('textbox',{name:'个人简介',exact:true}).fill('本人已参与 Python 与 SQL 后端接口开发，按真实职责突出与目标岗位相关的经验。');
+  await page.getByTestId('candidate-review-confirmed').check();
+  await page.getByTestId('candidate-next-target').click();
+  const plan=page.getByTestId('candidate-recompute-plan');
+  await expect(plan).toContainText('个人简介');
+  await expect(plan.getByTestId('candidate-recompute-reused')).toContainText('工作经验研判');
+  await page.getByTestId('candidate-recompute-view-report').click();
+  await expect(page.getByTestId('dimension-experience')).toContainText('可复用');
+  await expect(page.getByTestId('candidate-download-report')).toBeDisabled();
+  await expect(page.getByTestId('candidate-next-todo')).toBeDisabled();
+  await page.getByRole('button',{name:'返回修改目标',exact:true}).click();
+  const completed=page.waitForResponse(response=>/\/api\/diagnosis\/tasks\/[^/]+\/run$/.test(response.url())&&response.request().method()==='POST');
+  await page.getByTestId('candidate-generate').click();
+  await expect(page.getByTestId('dimension-experience')).toContainText('已复用');
+  const next=(await (await completed).json()).current_run;
+  expect(next.report.meta.recompute.reused).toContain('experience');
+  expect(next.report.meta.recompute.recomputed).not.toContain('experience');
+  expect(next.report.meta.recompute.source_run_id).toBe(previous.id);
+  expect(next.report.dimensions.experience.months_total).toBe(previous.report.dimensions.experience.months_total);
+  await fs.writeFile('E:/codex-acceptance/paperpro-field-recompute-20261030/frontend-summary-network.json',JSON.stringify({
+    source_run_id:previous.id,current_run_id:next.id,recompute:next.report.meta.recompute,
+    experience_provenance:next.report.meta.module_provenance.experience,
+    previous_months:previous.report.dimensions.experience.months_total,current_months:next.report.dimensions.experience.months_total,
+  },null,2));
+  await page.getByTestId('dimension-experience').screenshot({path:'E:/codex-acceptance/paperpro-field-recompute-20261030/frontend-experience-reused.png'});
+  await expect(page.getByTestId('candidate-recompute-result')).toContainText('工作经验研判');
+  const source=page.waitForResponse(response=>response.url().endsWith('/history')&&response.request().method()==='GET');
+  await page.getByTestId('dimension-experience').getByRole('button',{name:'查看结果来源',exact:true}).click();
+  const history=await (await source).json();
+  expect(history.runs.some(item=>item.id===previous.id)).toBe(true);
+  await expect(page.getByTestId('candidate-history-panel')).toContainText('历史诊断只读内容');
+  await expect(page.getByText(previous.id,{exact:true})).toHaveCount(0);
+});
+
+test('V3 minimal recompute: weights change recalculates match and reuses other four modules',async({page})=>{
+  const previous=await reviewedDemo(page);
+  await page.getByRole('button',{name:'返回修改目标',exact:true}).click();
+  const first=page.getByLabel('能力项 1 权重（%）',{exact:true});
+  const second=page.getByLabel('能力项 2 权重（%）',{exact:true});
+  const firstWeight=Number(await first.inputValue());
+  const secondWeight=Number(await second.inputValue());
+  expect(secondWeight).toBeGreaterThan(1);
+  await first.fill(String(firstWeight+1));
+  await second.fill(String(secondWeight-1));
+  await page.getByTestId('candidate-requirements-confirmed').check();
+  const plan=page.getByTestId('candidate-recompute-plan');
+  await expect(plan.getByTestId('candidate-recompute-recomputed')).toHaveText(/任职资格匹配度/);
+  await expect(plan.getByTestId('candidate-recompute-recomputed')).not.toContainText('工作经验研判');
+  await expect(plan.getByTestId('candidate-recompute-reused')).toContainText('工作经验研判');
+  await plan.screenshot({path:'E:/codex-acceptance/paperpro-field-recompute-20261030/frontend-weight-plan.png'});
+  await page.getByTestId('candidate-recompute-view-report').click();
+  await expect(page.getByTestId('dimension-match')).toContainText('待重算');
+  await expect(page.getByTestId('dimension-experience')).toContainText('可复用');
+  await page.getByRole('button',{name:'返回修改目标',exact:true}).click();
+  const completed=page.waitForResponse(response=>/\/api\/diagnosis\/tasks\/[^/]+\/run$/.test(response.url())&&response.request().method()==='POST');
+  await page.getByTestId('candidate-generate').click();
+  const next=(await (await completed).json()).current_run;
+  expect(next.report.meta.recompute.recomputed).toEqual(['match']);
+  expect(new Set(next.report.meta.recompute.reused)).toEqual(new Set(['experience','potential','motivation','verification']));
+  expect(next.report.meta.recompute.source_run_id).toBe(previous.id);
+  await fs.writeFile('E:/codex-acceptance/paperpro-field-recompute-20261030/frontend-weights-network.json',JSON.stringify({
+    source_run_id:previous.id,current_run_id:next.id,recompute:next.report.meta.recompute,
+    module_provenance:next.report.meta.module_provenance,
+  },null,2));
+  await expect(page.getByTestId('dimension-match')).toContainText('已重算');
+  await expect(page.getByTestId('dimension-experience')).toContainText('已复用');
+  await page.getByTestId('candidate-recompute-result').screenshot({path:'E:/codex-acceptance/paperpro-field-recompute-20261030/frontend-weight-result.png'});
+});
+
+test('V3 minimal recompute: company edit preserves custom requirements and recalculates motivation only',async({page})=>{
+  await reviewedDemo(page);
+  await page.getByRole('button',{name:'返回修改目标',exact:true}).click();
+  const first=page.getByLabel('能力项 1 权重（%）',{exact:true});
+  const second=page.getByLabel('能力项 2 权重（%）',{exact:true});
+  const firstWeight=Number(await first.inputValue())+1;
+  const secondWeight=Number(await second.inputValue())-1;
+  const customDescription='本人确认的岗位要求：Python 接口开发与 SQL 数据处理，保留本次自定义评分口径。';
+  await first.fill(String(firstWeight));
+  await second.fill(String(secondWeight));
+  await page.getByLabel('能力项 1 要求描述',{exact:true}).fill(customDescription);
+  await page.getByTestId('candidate-requirements-confirmed').check();
+  const baselineResponse=page.waitForResponse(response=>/\/api\/diagnosis\/tasks\/[^/]+\/run$/.test(response.url())&&response.request().method()==='POST');
+  await page.getByTestId('candidate-generate').click();
+  const baseline=await (await baselineResponse).json();
+  await expect(page.getByTestId('dimension-match')).toBeVisible();
+  await page.getByRole('button',{name:'返回修改目标',exact:true}).click();
+  await page.getByTestId('candidate-target-company').fill('另一家纯合成企业');
+  await expect(first).toHaveValue(String(firstWeight));
+  await expect(second).toHaveValue(String(secondWeight));
+  await expect(page.getByLabel('能力项 1 要求描述',{exact:true})).toHaveValue(customDescription);
+  await expect(page.getByTestId('candidate-requirements-confirmed')).not.toBeChecked();
+  await expect(page.getByTestId('candidate-generate')).toBeDisabled();
+  await page.getByTestId('candidate-requirements-confirmed').check();
+  const plan=page.getByTestId('candidate-recompute-plan');
+  await expect(plan).toContainText('目标 · 公司');
+  await expect(plan.getByTestId('candidate-recompute-recomputed')).toHaveText('简历针对性');
+  await expect(plan.getByTestId('candidate-recompute-reused')).toContainText('任职资格匹配度');
+  await plan.screenshot({path:'E:/codex-acceptance/paperpro-field-recompute-20261030/frontend-company-plan.png'});
+  const completed=page.waitForResponse(response=>/\/api\/diagnosis\/tasks\/[^/]+\/run$/.test(response.url())&&response.request().method()==='POST');
+  await page.getByTestId('candidate-generate').click();
+  const next=await (await completed).json();
+  expect(next.state.requirements).toEqual(baseline.state.requirements);
+  expect(next.current_run.report.meta.recompute.changed_fields).toEqual(['target.company']);
+  expect(next.current_run.report.meta.recompute.recomputed).toEqual(['motivation']);
+  expect(new Set(next.current_run.report.meta.recompute.reused)).toEqual(new Set(['match','experience','potential','verification']));
+  expect(next.current_run.report.meta.recompute.source_run_id).toBe(baseline.current_run.id);
+  await expect(page.getByTestId('dimension-match')).toContainText('已复用');
+  await expect(page.getByTestId('dimension-motivation')).toContainText('已重算');
+  await fs.writeFile('E:/codex-acceptance/paperpro-field-recompute-20261030/frontend-company-network.json',JSON.stringify({
+    source_run_id:baseline.current_run.id,current_run_id:next.current_run.id,
+    requirements_before:baseline.state.requirements,requirements_after:next.state.requirements,
+    recompute:next.current_run.report.meta.recompute,module_provenance:next.current_run.report.meta.module_provenance,
+  },null,2));
+  await page.getByTestId('candidate-recompute-result').screenshot({path:'E:/codex-acceptance/paperpro-field-recompute-20261030/frontend-company-result.png'});
+  // Changing the JD still requires extracting and confirming the job requirements again.
+  await page.getByRole('button',{name:'返回修改目标',exact:true}).click();
+  await page.getByRole('textbox',{name:'目标岗位 JD（可选，但推荐）',exact:true}).fill('新的合成岗位职责：负责数据平台开发。');
+  await expect(page.getByTestId('candidate-requirements')).toHaveCount(0);
+  await expect(page.getByTestId('candidate-generate')).toBeDisabled();
 });

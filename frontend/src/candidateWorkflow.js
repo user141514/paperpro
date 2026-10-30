@@ -25,6 +25,21 @@ export function draftDifferences(local, server, prefix = '') {
   return changes;
 }
 
+// Display only server-owned dependency and execution decisions; this helper
+// never decides which module must run or changes report validity.
+export function moduleRecomputePresentation(name, { status, stale, plan, actual, affected=[] } = {}) {
+  if (stale && plan?.disabled?.includes(name)) return { text: '本次已关闭', color: 'gray' };
+  if (stale && affected.includes(name)) return { text: '待重算', color: 'orange' };
+  if (stale && status === 'disabled' && plan?.recomputed?.includes(name)) return { text: '待生成', color: 'orange' };
+  if (stale && status === 'ok' && plan?.reused?.includes(name)) return { text: '可复用 · 保留结果', color: 'teal' };
+  if (status === 'ok') {
+    if (!stale && actual?.reused?.includes(name)) return { text: '已复用', color: 'teal' };
+    if (!stale && actual?.recomputed?.includes(name) && actual.source_run_id) return { text: '已重算', color: 'teal' };
+    return { text: '已生成', color: 'teal' };
+  }
+  return { text: status === 'disabled' ? '已关闭' : status === 'cancelled' ? '已取消' : '生成失败', color: 'gray' };
+}
+
 export async function workflowRequest(path, { method = 'GET', json, body, signal } = {}) {
   const response = await fetch(path, {
     method, credentials: 'same-origin', signal,
