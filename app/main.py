@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from io import BytesIO
 import os
 from pathlib import Path
@@ -16,10 +17,25 @@ from .models import EnhanceRequest, ExportRequest
 from .parser import MAX_UPLOAD_BYTES, extract_file, parse_resume
 from .settings import SettingsError, resolve_provider
 from .diagnosis.api import router as diagnosis_router
+from .diagnosis.workflow import router as workflow_router, store as candidate_store
+from .diagnosis import workflow_export  # Registers owned snapshot export on workflow_router.
+from .diagnosis.workflow_store import WorkflowError
 
 
-app = FastAPI(title="PaperPro Resume Studio", version="0.1.0", docs_url="/api/docs", redoc_url=None)
+@asynccontextmanager
+async def lifespan(app):
+    candidate_store().recover_interrupted()
+    yield
+
+
+app = FastAPI(title="PaperPro Resume Studio", version="0.1.0", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
 app.include_router(diagnosis_router)
+app.include_router(workflow_router)
+
+
+@app.exception_handler(WorkflowError)
+async def workflow_error(request, error: WorkflowError):
+    return JSONResponse(status_code=error.status, content={"detail": error.message}, headers={"Cache-Control": "no-store"})
 
 
 @app.exception_handler(RequestValidationError)
